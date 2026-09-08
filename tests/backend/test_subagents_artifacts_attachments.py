@@ -562,3 +562,372 @@ def test_ws_upload_attachment_and_get_artifact(phase7_setup):
             assert "# Final Report" in art_res["payload"]["artifact"]["content"]
 
 
+@pytest.mark.asyncio
+async def test_real_sdk_adapter_subagents_lifecycle():
+    """Verifies that RealSDKAntigravityAdapter maps subagent tool calls (start, invoke, define)
+    and hooks to on_subagent_update events with correct roles, states, and activities."""
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock, patch
+    import google.antigravity as agy
+    from agy_cockpit.backend.services.agent_service import RealSDKAntigravityAdapter
+    from agy_cockpit.backend.domain.enums import RunState
+
+    adapter = RealSDKAntigravityAdapter()
+    captured_hooks = []
+
+    class MockAsyncIter:
+        def __init__(self, items):
+            self.items = list(items)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.items:
+                raise StopAsyncIteration
+            return self.items.pop(0)
+
+    class MockChatResponse:
+        def __init__(self):
+            self.usage_metadata = MagicMock()
+            self.usage_metadata.model_dump.return_value = {"prompt_tokens": 10}
+            self.thoughts = MockAsyncIter(["Planning subagents"])
+            self.tool_calls = MockAsyncIter([
+                agy.types.ToolCall(
+                    id="sa-invoke",
+                    name="invoke_subagent",
+                    args={"Role": "Researcher", "Prompt": "Search codebase"}
+                ),
+                agy.types.ToolCall(
+                    id="sa-start",
+                    name="start_subagent",
+                    args={"role": "Tester", "task": "Run pytest"}
+                ),
+                agy.types.ToolCall(
+                    id="sa-define",
+                    name="define_subagent",
+                    args={"description": "Define analyzer helper"}
+                ),
+            ])
+
+        def __aiter__(self):
+            return MockAsyncIter(["All subagent work done"])
+
+        async def cancel(self):
+            pass
+
+    class MockAgentContext:
+        def __init__(self, config):
+            self.config = config
+            captured_hooks.extend(config.hooks)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+
+        async def chat(self, chat_input):
+            return MockChatResponse()
+
+    subagent_updates = []
+    async def on_sub(sa_id, parent_id, role, state, activity, depth):
+        subagent_updates.append({
+            "id": sa_id,
+            "role": role,
+            "state": state,
+            "activity": activity,
+            "depth": depth,
+        })
+
+    tool_logs = []
+    async def on_tool_log(tid, chunk, is_stderr):
+        tool_logs.append((tid, chunk, is_stderr))
+
+    tools_started = []
+    tools_finished = []
+    async def on_tool_start(tid, name, args):
+        tools_started.append((tid, name, args))
+    async def on_tool_finish(tid, name, success, summary):
+        tools_finished.append((tid, name, success, summary))
+    async def noop(*args, **kwargs):
+        pass
+
+    conv_id = str(uuid.uuid4())
+    with patch("google.antigravity.Agent", side_effect=MockAgentContext):
+        res = await adapter.run_turn(
+            conversation_id=conv_id,
+            save_dir="/tmp",
+            workspace_path="/tmp",
+            prompt="Delegate subagents",
+            model_slug="gemini-3.8-flash-high",
+            policy_preset="request-review",
+            approval_handler=AsyncMock(return_value=True),
+            on_thought=noop,
+            on_token=noop,
+            on_tool_start=on_tool_start,
+            on_tool_finish=on_tool_finish,
+            cancellation_token=asyncio.Event(),
+            on_tool_log=on_tool_log,
+            on_subagent_update=on_sub,
+        )
+
+    assert res.state == RunState.COMPLETED
+    assert res.final_text == "All subagent work done"
+    assert len(tools_started) == 3
+
+    # Check that invoke, start, and define all created running subagent updates
+    running_updates = [u for u in subagent_updates if u["state"] == "running"]
+    assert len(running_updates) == 3
+    assert running_updates[0]["id"] == "subagent-sa-invoke"
+    assert running_updates[0]["role"] == "Researcher"
+    assert running_updates[0]["activity"] == "Search codebase"
+
+    assert running_updates[1]["id"] == "subagent-sa-start"
+    assert running_updates[1]["role"] == "Tester"
+    assert running_updates[1]["activity"] == "Run pytest"
+
+    assert running_updates[2]["id"] == "subagent-sa-define"
+    assert running_updates[2]["role"] == "Subagent"
+    assert running_updates[2]["activity"] == "Define analyzer helper"
+
+    # Verify hooks: on_post_tool updates subagent to completed/failed
+    assert len(captured_hooks) == 2
+    post_tool_hook = captured_hooks[0]
+
+    # Invoke post_tool hook for success
+    await post_tool_hook(agy.types.ToolResult(
+        id="sa-invoke",
+        name="invoke_subagent",
+        result="Found 5 symbols in codebase",
+    ))
+    last_update = subagent_updates[-1]
+    assert last_update["id"] == "subagent-sa-invoke"
+    assert last_update["state"] == "completed"
+    assert "Found 5 symbols" in last_update["activity"]
+
+    # Invoke post_tool hook for failure
+    await post_tool_hook(agy.types.ToolResult(
+        id="sa-start",
+        name="start_subagent",
+        result=None,
+        error="Subagent crashed with exception",
+    ))
+    last_err_update = subagent_updates[-1]
+    assert last_err_update["id"] == "subagent-sa-start"
+    assert last_err_update["state"] == "failed"
+    assert "crashed" in last_err_update["activity"]
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_adapter_tool_approval_flow():
+    """Verifies tool approval policy creation and invocation in RealSDKAntigravityAdapter."""
+    import uuid
+    from unittest.mock import AsyncMock, patch
+    from google.antigravity.hooks.policy import Decision
+    import google.antigravity as agy
+    from agy_cockpit.backend.services.agent_service import RealSDKAntigravityAdapter
+
+    adapter = RealSDKAntigravityAdapter()
+    approval_mock = AsyncMock(return_value=True)
+
+    # 1. Preset request-review: mutating tools ask_user, reading tools allow
+    policies_rr = adapter._build_policies("request-review", approval_mock)
+    ask_user_rr = [p for p in policies_rr if p.decision == Decision.ASK_USER]
+    assert set(p.tool for p in ask_user_rr) == {"run_command", "create_file", "edit_file"}
+    for p in ask_user_rr:
+        assert p.ask_user == approval_mock
+
+    # Test executing approval callback directly through policy
+    tc = agy.types.ToolCall(id="tc-1", name="run_command", args={"command": "npm test"})
+    decision = await ask_user_rr[0].ask_user(tc)
+    assert decision is True
+    approval_mock.assert_called_with(tc)
+
+    # 2. Preset strict: mutating tools ask_user, wildcard deny
+    policies_strict = adapter._build_policies("strict", approval_mock)
+    ask_user_strict = [p for p in policies_strict if p.decision == Decision.ASK_USER]
+    assert set(p.tool for p in ask_user_strict) == {"run_command", "create_file", "edit_file"}
+    deny_strict = [p for p in policies_strict if p.decision == Decision.DENY]
+    assert len(deny_strict) == 1
+    assert deny_strict[0].tool == "*"
+
+    # 3. Preset always-proceed: policy.allow_all()
+    policies_ap = adapter._build_policies("always-proceed", approval_mock)
+    assert len(policies_ap) == 1
+    assert policies_ap[0].decision == Decision.APPROVE
+    assert policies_ap[0].tool == "*"
+
+    # 4. Verify LocalAgentConfig receives the built policies during run_turn
+    captured_config = []
+    class MockAgentContext:
+        def __init__(self, config):
+            captured_config.append(config)
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def chat(self, chat_input):
+            class Resp:
+                usage_metadata = None
+                thoughts = []
+                tool_calls = []
+                def __aiter__(self):
+                    return iter([])
+                async def cancel(self):
+                    pass
+            return Resp()
+
+    conv_id = str(uuid.uuid4())
+    with patch("google.antigravity.Agent", side_effect=MockAgentContext):
+        await adapter.run_turn(
+            conversation_id=conv_id,
+            save_dir="/tmp",
+            workspace_path="/tmp",
+            prompt="run build",
+            model_slug="gemini-3.8-flash-high",
+            policy_preset="request-review",
+            approval_handler=approval_mock,
+            on_thought=AsyncMock(),
+            on_token=AsyncMock(),
+            on_tool_start=AsyncMock(),
+            on_tool_finish=AsyncMock(),
+            cancellation_token=asyncio.Event(),
+        )
+
+    assert len(captured_config) == 1
+    config = captured_config[0]
+    assert len(config.policies) == len(policies_rr)
+    assert config.capabilities.enable_subagents is True
+
+
+@pytest.mark.asyncio
+async def test_cli_subscription_adapter_stream_parsing_subagents_and_logs():
+    """Verifies that CLISubscriptionAdapter correctly parses subagents, stderr logs, and token usage."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from agy_cockpit.backend.services.agent_service import CLISubscriptionAdapter
+
+    adapter = CLISubscriptionAdapter(agy_binary_path="/mock/bin/agy")
+
+    ndjson_lines = [
+        json.dumps({"type": "init", "session_id": "cli-conv-1"}),
+        json.dumps({
+            "type": "step_update",
+            "step_update": {
+                "step_type": "agent_response",
+                "text_delta": "Processing request...",
+                "usage": {"thinking_tokens": 128},
+            }
+        }),
+        json.dumps({
+            "type": "step_update",
+            "step_update": {
+                "step_type": "tool",
+                "step_index": 1,
+                "state": "ACTIVE",
+                "tool_name": "invoke_subagent",
+                "tool_info": {
+                    "name": "invoke_subagent",
+                    "parameters": {"Role": "Security Reviewer", "Prompt": "Audit auth tokens"}
+                },
+                "subagent_info": {"conversation_id": "sub-audit-1", "role": "Security Reviewer"}
+            }
+        }),
+        json.dumps({
+            "type": "step_update",
+            "step_update": {
+                "step_type": "tool",
+                "step_index": 1,
+                "state": "DONE",
+                "tool_name": "invoke_subagent",
+                "tool_info": {"output": "Audit passed clean."},
+                "subagent_info": {"conversation_id": "sub-audit-1", "role": "Security Reviewer"}
+            }
+        }),
+        json.dumps({
+            "type": "step_update",
+            "step_update": {
+                "step_type": "tool",
+                "step_index": 2,
+                "state": "ACTIVE",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {"command": "git push"}
+                }
+            }
+        }),
+        json.dumps({
+            "type": "step_update",
+            "step_update": {
+                "step_type": "tool",
+                "step_index": 2,
+                "state": "ERROR",
+                "tool_name": "run_command",
+                "tool_info": {"error": {"message": "fatal: remote error"}},
+            }
+        }),
+        json.dumps({"type": "result", "status": "completed", "error_message": None}),
+    ]
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = asyncio.StreamReader()
+    mock_proc.stdout.feed_data(("\n".join(ndjson_lines) + "\n").encode("utf-8"))
+    mock_proc.stdout.feed_eof()
+    mock_proc.stderr = asyncio.StreamReader()
+    mock_proc.stderr.feed_eof()
+    mock_proc.wait = AsyncMock(return_value=0)
+
+    sub_updates = []
+    tool_logs = []
+    tool_finishes = []
+    thoughts = []
+    tokens = []
+
+    async def on_sub(sa_id, parent, role, state, activity, depth):
+        sub_updates.append((sa_id, role, state, activity, depth))
+    async def on_log(tid, chunk, is_stderr):
+        tool_logs.append((tid, chunk, is_stderr))
+    async def on_finish(tid, name, success, summary):
+        tool_finishes.append((tid, name, success, summary))
+    async def on_thought(th): thoughts.append(th)
+    async def on_token(tok): tokens.append(tok)
+    async def noop(*args, **kwargs): return True
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        res = await adapter.run_turn(
+            conversation_id="conv-1",
+            save_dir="/tmp",
+            workspace_path="/tmp",
+            prompt="Audit and push",
+            model_slug="gemini-3.8-flash-high",
+            policy_preset="always-proceed",
+            approval_handler=noop,
+            on_thought=on_thought,
+            on_token=on_token,
+            on_tool_start=noop,
+            on_tool_finish=on_finish,
+            cancellation_token=asyncio.Event(),
+            on_tool_log=on_log,
+            on_subagent_update=on_sub,
+        )
+
+    assert res.final_text == "Processing request..."
+    assert len(thoughts) == 1
+    assert "128 tokens" in thoughts[0]
+    assert len(sub_updates) == 2
+    assert sub_updates[0] == ("sub-audit-1", "Security Reviewer", "running", "Executing invoke_subagent", 1)
+    assert sub_updates[1] == ("sub-audit-1", "Security Reviewer", "completed", "Executing invoke_subagent", 1)
+
+    # Tool logs: tool 1 is normal (is_stderr=False), tool 2 error is stderr (is_stderr=True)
+    assert len(tool_logs) == 2
+    assert tool_logs[0] == ("tool-1-invoke_subagent", "Audit passed clean.", False)
+    assert tool_logs[1] == ("tool-2-run_command", "fatal: remote error", True)
+
+    # Tool finishes
+    assert len(tool_finishes) == 2
+    assert tool_finishes[0][2] is True
+    assert tool_finishes[1][2] is False
+
+
+

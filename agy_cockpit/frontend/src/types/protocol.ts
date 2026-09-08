@@ -91,16 +91,187 @@ export type EventType =
   | 'run_cancelled'
   | 'run_failed'
   | 'sync_state'
+  | 'workspace_search_results'
+  | 'settings_updated'
+  | 'command_result'
   | 'pong'
   | 'protocol_error';
 
-// Specific Payloads
+// --- Client Command Payloads ---
+
+export interface HelloCommandPayload {
+  client_name?: string;
+  client_version?: string;
+  last_session_id?: string;
+}
+
+export interface ListWorkspacesCommandPayload {}
+
+export interface OpenWorkspaceCommandPayload {
+  canonical_path?: string;
+  workspace_id?: string;
+}
+
+export interface ListConversationsCommandPayload {
+  workspace_id: string;
+  include_archived?: boolean;
+}
+
+export interface CreateConversationCommandPayload {
+  workspace_id: string;
+  title?: string;
+  model_slug?: string;
+}
+
+export interface OpenConversationCommandPayload {
+  conversation_id: string;
+}
+
+export interface RenameConversationCommandPayload {
+  conversation_id: string;
+  title: string;
+}
+
+export interface ArchiveConversationCommandPayload {
+  conversation_id: string;
+}
+
+export interface SendPromptCommandPayload {
+  prompt: string;
+  attachment_ids?: string[];
+  model_slug?: string;
+}
+
+export interface CancelRunCommandPayload {
+  run_id: string;
+}
+
+export interface ResumeRunStreamPayload {
+  run_id: string;
+  last_seen_sequence: number;
+  after_sequence?: number;
+  conversation_id?: string;
+}
+
+export type ResumeRunStreamCommandPayload = ResumeRunStreamPayload;
+
+export interface ActionApprovalCommandPayload {
+  approval_request_id: string;
+  decision: 'approved' | 'rejected' | string;
+  note?: string;
+}
+
+export interface GetFileDiffCommandPayload {
+  file_path: string;
+  run_id?: string;
+  workspace_id?: string;
+}
+
+export interface SearchWorkspaceCommandPayload {
+  query?: string;
+  limit?: number;
+  include_hidden?: boolean;
+}
+
+export interface UploadAttachmentCommandPayload {
+  filename: string;
+  mime_type: string;
+  data_base64: string;
+  conversation_id?: string;
+}
+
+export interface GetArtifactCommandPayload {
+  artifact_id: string;
+}
+
+export interface UpdateSettingsCommandPayload {
+  default_model?: string;
+  policy_preset?: string;
+  theme?: string;
+}
+
+export interface PingCommandPayload {}
+
+// --- Server Event Payloads ---
+
 export interface HelloAckPayload {
   session_id: string;
   version: number;
   server_time: string;
   default_model: string;
   policy_preset: string;
+}
+
+export interface WorkspaceListPayload {
+  workspaces: Array<{
+    id: string;
+    canonical_path: string;
+    display_name?: string;
+    name?: string;
+    is_git?: boolean;
+    is_active?: boolean;
+    created_at?: string;
+    last_opened_at?: string;
+  }>;
+}
+
+export interface WorkspaceOpenedPayload {
+  workspace: {
+    id: string;
+    canonical_path: string;
+    display_name?: string;
+    name?: string;
+    is_git?: boolean;
+    is_active?: boolean;
+    created_at?: string;
+    last_opened_at?: string;
+  };
+}
+
+export interface ConversationListPayload {
+  conversations: Array<{
+    id: string;
+    workspace_id: string;
+    title: string;
+    model_slug: string;
+    is_archived: boolean;
+    created_at: string;
+    updated_at: string;
+  }>;
+}
+
+export interface ConversationCreatedPayload {
+  conversation: {
+    id: string;
+    workspace_id: string;
+    title: string;
+    model_slug: string;
+    is_archived: boolean;
+    created_at: string;
+    updated_at: string;
+  };
+}
+
+export interface ConversationSnapshotPayload {
+  conversation: {
+    id: string;
+    workspace_id: string;
+    title: string;
+    model_slug: string;
+    is_archived: boolean;
+    created_at: string;
+    updated_at: string;
+    [key: string]: unknown;
+  };
+  messages: Array<Record<string, unknown>>;
+  active_run?: Record<string, unknown> | null;
+}
+
+export interface RunStartedPayload {
+  run_id: string;
+  conversation_id: string;
+  user_message_id?: string;
+  started_at: string;
 }
 
 export interface ReasoningDeltaPayload {
@@ -162,9 +333,44 @@ export interface SubagentUpdatePayload {
   id: string;
   parent_id?: string;
   name_or_role: string;
-  state: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  state: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | string;
   current_activity?: string;
   depth?: number;
+}
+
+export interface ArtifactData {
+  id: string;
+  run_id?: string;
+  kind?: string;
+  name?: string;
+  mime_type?: string;
+  path_or_storage_key?: string;
+  preview_supported?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  size_bytes?: number;
+  content?: string;
+}
+
+export interface ArtifactCreatedPayload extends Partial<ArtifactData> {
+  artifact?: ArtifactData;
+  artifact_id?: string;
+}
+
+export interface ArtifactUpdatedPayload extends Partial<ArtifactData> {
+  artifact?: ArtifactData;
+  artifact_id?: string;
+}
+
+export interface AttachmentReadyPayload {
+  attachment: {
+    id: string;
+    conversation_id: string;
+    filename: string;
+    mime_type: string;
+    size_bytes: number;
+    created_at: string;
+  };
 }
 
 export interface RunCompletedPayload {
@@ -203,7 +409,7 @@ export interface SyncStatePayload {
     sdk_tool_name: string;
     args: Record<string, unknown>;
     reason?: string;
-  };
+  } | null;
   changed_files: string[];
   subagents: Array<{
     id: string;
@@ -222,6 +428,28 @@ export interface SyncStatePayload {
   }>;
   last_sequence: number;
 }
+
+export interface WorkspaceSearchResultsPayload {
+  results: Array<{
+    path: string;
+    is_directory?: boolean;
+    type?: string;
+  }>;
+}
+
+export interface SettingsUpdatedPayload {
+  settings: Record<string, unknown>;
+}
+
+export interface CommandResultPayload {
+  request_id?: string;
+  success: boolean;
+  attachment?: Record<string, unknown>;
+  artifact?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface PongPayload {}
 
 export interface ProtocolErrorPayload {
   request_id?: string;
