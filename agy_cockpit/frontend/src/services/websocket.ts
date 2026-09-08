@@ -207,7 +207,11 @@ class WebSocketService {
         break;
 
       case 'tool_log':
-        store.appendToolLog(event.payload.tool_execution_id, event.payload.chunk);
+        store.appendToolLog(
+          event.payload.tool_execution_id,
+          event.payload.chunk,
+          Boolean(event.payload.is_stderr)
+        );
         break;
 
       case 'tool_finished':

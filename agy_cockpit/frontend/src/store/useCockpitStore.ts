@@ -12,6 +12,7 @@ import {
   Artifact,
   Settings,
   ModelOption,
+  ToolLogEntry,
 } from '../types/models';
 import { SyncStatePayload } from '../types/protocol';
 
@@ -49,7 +50,7 @@ interface CockpitState {
   subagents: Record<string, Subagent>;
   artifacts: Record<string, Artifact>;
   changedFiles: Record<string, ChangedFile>;
-  toolLogs: Record<string, string[]>;
+  toolLogs: Record<string, ToolLogEntry[]>;
 
   // UI state
   activeDrawerTab: DrawerTab;
@@ -78,7 +79,7 @@ interface CockpitState {
   appendReasoning: (delta: string, sequence?: number) => void;
   appendToken: (delta: string, sequence?: number) => void;
   toolStarted: (toolId: string, name: string, args: Record<string, unknown>, sequence?: number) => void;
-  appendToolLog: (toolId: string, chunk: string) => void;
+  appendToolLog: (toolId: string, chunk: string, is_stderr?: boolean) => void;
   toolFinished: (toolId: string, success: boolean, summary?: string, sequence?: number) => void;
   setPendingApproval: (approval: ApprovalRequest | null) => void;
   dequeueApproval: (approvalId?: string) => void;
@@ -300,11 +301,11 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       };
     }),
 
-  appendToolLog: (toolId, chunk) =>
+  appendToolLog: (toolId, chunk, is_stderr = false) =>
     set((state) => {
       const existingLogs = state.toolLogs[toolId] || [];
       // Bounded buffer of 500 chunks to prevent memory ballooning
-      const updatedLogs = [...existingLogs.slice(-499), chunk];
+      const updatedLogs = [...existingLogs.slice(-499), { chunk, is_stderr }];
       return {
         toolLogs: { ...state.toolLogs, [toolId]: updatedLogs },
       };

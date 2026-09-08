@@ -39,6 +39,7 @@ export const RightDrawer: React.FC = () => {
   const [artifactContent, setArtifactContent] = useState<string | null>(null);
   const [isLoadingArtifact, setIsLoadingArtifact] = useState(false);
   const [htmlViewMode, setHtmlViewMode] = useState<'preview' | 'source'>('preview');
+  const [autoScroll, setAutoScroll] = useState(true);
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
   // Default to first tool with logs if not selected
@@ -51,10 +52,10 @@ export const RightDrawer: React.FC = () => {
 
   // Auto-scroll terminal to bottom
   useEffect(() => {
-    if (activeDrawerTab === 'terminal' && terminalEndRef.current) {
+    if (activeDrawerTab === 'terminal' && autoScroll && terminalEndRef.current) {
       terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [toolLogs, selectedToolId, activeDrawerTab]);
+  }, [toolLogs, selectedToolId, activeDrawerTab, autoScroll]);
 
   if (!activeDrawerTab) return null;
 
@@ -212,22 +213,48 @@ export const RightDrawer: React.FC = () => {
         {/* TERMINAL TAB */}
         {activeDrawerTab === 'terminal' && (
           <div className="flex-1 flex flex-col overflow-hidden bg-neutral-950 font-mono">
-            {/* Tool picker if multiple commands */}
-            {Object.keys(toolLogs).length > 1 && (
-              <div className="p-2 border-b border-neutral-800 bg-neutral-900/40 flex items-center space-x-2 overflow-x-auto text-xs">
-                {Object.keys(toolLogs).map((id) => (
-                  <button
-                    key={id}
-                    onClick={() => setSelectedToolId(id)}
-                    className={`px-2 py-1 rounded ${
-                      selectedToolId === id ? 'bg-indigo-600 text-white' : 'bg-neutral-800 text-neutral-300'
-                    }`}
-                  >
-                    Tool {id.slice(0, 8)}
-                  </button>
-                ))}
+            {/* Terminal toolbar */}
+            <div className="p-2 border-b border-neutral-800 bg-neutral-900/40 flex items-center justify-between text-xs">
+              <div className="flex items-center space-x-2 overflow-x-auto">
+                {Object.keys(toolLogs).length > 1 ? (
+                  Object.keys(toolLogs).map((id) => (
+                    <button
+                      key={id}
+                      onClick={() => setSelectedToolId(id)}
+                      className={`px-2 py-1 rounded cursor-pointer ${
+                        selectedToolId === id ? 'bg-indigo-600 text-white' : 'bg-neutral-800 text-neutral-300'
+                      }`}
+                    >
+                      Tool {id.slice(0, 8)}
+                    </button>
+                  ))
+                ) : selectedToolId ? (
+                  <span className="text-neutral-400 font-mono text-[11px] px-1">
+                    Tool {selectedToolId.slice(0, 8)}
+                  </span>
+                ) : (
+                  <span className="text-neutral-400 font-mono text-[11px] px-1">
+                    Console Logs
+                  </span>
+                )}
               </div>
-            )}
+              <button
+                onClick={() => setAutoScroll((prev) => !prev)}
+                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors flex items-center space-x-1.5 shrink-0 cursor-pointer ${
+                  autoScroll
+                    ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/60'
+                    : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                }`}
+                title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    autoScroll ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'
+                  }`}
+                />
+                <span>Auto-scroll: {autoScroll ? 'ON' : 'PAUSED'}</span>
+              </button>
+            </div>
 
             {/* Terminal output box */}
             <div className="flex-1 p-4 overflow-y-auto text-xs space-y-1 select-text">
@@ -236,15 +263,21 @@ export const RightDrawer: React.FC = () => {
                   No active command logs available.
                 </div>
               ) : (
-                toolLogs[selectedToolId].map((chunk, idx) => (
-                  <div
-                    key={idx}
-                    className="leading-relaxed break-all"
-                    dangerouslySetInnerHTML={{
-                      __html: ansiConverter.toHtml(chunk),
-                    }}
-                  />
-                ))
+                toolLogs[selectedToolId].map((entry, idx) => {
+                  const text = typeof entry === 'string' ? entry : entry.chunk;
+                  const isStderr = typeof entry === 'object' && entry.is_stderr;
+                  return (
+                    <div
+                      key={idx}
+                      className={`leading-relaxed break-all ${
+                        isStderr ? 'text-rose-400 font-medium' : 'text-neutral-300'
+                      }`}
+                      dangerouslySetInnerHTML={{
+                        __html: ansiConverter.toHtml(text),
+                      }}
+                    />
+                  );
+                })
               )}
               <div ref={terminalEndRef} />
             </div>

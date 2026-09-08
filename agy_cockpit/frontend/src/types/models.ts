@@ -54,6 +54,11 @@ export interface Run {
   usage?: Record<string, unknown>;
 }
 
+export interface ToolLogEntry {
+  chunk: string;
+  is_stderr?: boolean;
+}
+
 export interface ToolExecution {
   id: string;
   run_id: string;
@@ -64,7 +69,7 @@ export interface ToolExecution {
   finished_at?: string;
   success?: boolean;
   output_summary?: string;
-  logs: string[];
+  logs: Array<string | ToolLogEntry>;
 }
 
 export interface ApprovalRequest {
