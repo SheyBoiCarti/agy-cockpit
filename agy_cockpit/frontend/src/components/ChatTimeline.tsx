@@ -1,0 +1,178 @@
+import React, { useRef, useEffect } from 'react';
+import { useCockpitStore } from '../store/useCockpitStore';
+import { MarkdownView } from './MarkdownView';
+import { ToolCard } from './ToolCard';
+import { ReasoningAccordion } from './ReasoningAccordion';
+import { Bot, User, AlertCircle, CheckCircle2, Clock, Ban } from 'lucide-react';
+
+export const ChatTimeline: React.FC = () => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const activeConversationId = useCockpitStore((s) => s.activeConversationId);
+  const conversation = useCockpitStore((s) =>
+    s.activeConversationId ? s.conversations[s.activeConversationId] : null
+  );
+  const messageIds = useCockpitStore((s) =>
+    s.activeConversationId ? s.conversationMessageIds[s.activeConversationId] || [] : []
+  );
+  const messagesMap = useCockpitStore((s) => s.messages);
+
+  const activeRunId = useCockpitStore((s) => s.activeRunId);
+  const activeRun = useCockpitStore((s) => (s.activeRunId ? s.runs[s.activeRunId] : null));
+  const reasoning = useCockpitStore((s) => s.reasoning);
+  const streamingOutput = useCockpitStore((s) => s.streamingOutput);
+  const activeTools = useCockpitStore((s) => s.activeTools);
+
+  const isStreaming = Boolean(activeRunId);
+
+  // Auto-scroll to bottom when streaming tokens or messages arrive
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messageIds.length, streamingOutput, reasoning, Object.keys(activeTools).length]);
+
+  if (!activeConversationId) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-neutral-500">
+        <Bot className="w-12 h-12 mb-3 text-neutral-600" />
+        <h3 className="text-lg font-medium text-neutral-300 mb-1">No Conversation Selected</h3>
+        <p className="text-sm max-w-sm">
+          Select a conversation from the sidebar or start a new conversation to begin pair programming.
+        </p>
+      </div>
+    );
+  }
+
+  const messages = messageIds.map((id) => messagesMap[id]).filter(Boolean);
+
+  return (
+    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+      {messages.length === 0 && !activeRunId && (
+        <div className="flex flex-col items-center justify-center h-full text-center text-neutral-500 py-16">
+          <Bot className="w-10 h-10 mb-2 text-indigo-400/70" />
+          <h3 className="text-base font-medium text-neutral-200">
+            {conversation?.title || 'New Conversation'}
+          </h3>
+          <p className="text-xs text-neutral-400 mt-1 max-w-md">
+            Type a task or question below. Antigravity will stream its reasoning, tool invocations, and answers.
+          </p>
+        </div>
+      )}
+
+      {/* Historical Messages */}
+      {messages.map((msg) => (
+        <div
+          key={msg.id}
+          className={`flex gap-3 max-w-4xl mx-auto ${
+            msg.role === 'user' ? 'justify-end' : 'justify-start'
+          }`}
+        >
+          {msg.role !== 'user' && (
+            <div className="w-8 h-8 rounded-full bg-indigo-950 border border-indigo-700/50 flex items-center justify-center text-indigo-300 shrink-0">
+              <Bot className="w-4 h-4" />
+            </div>
+          )}
+
+          <div
+            className={`rounded-2xl px-4 py-3 text-sm leading-relaxed max-w-[85%] ${
+              msg.role === 'user'
+                ? 'bg-neutral-800 text-neutral-100 rounded-br-sm border border-neutral-700/50 shadow-md'
+                : 'bg-neutral-900/80 text-neutral-200 rounded-bl-sm border border-neutral-800 shadow-md'
+            }`}
+          >
+            {msg.role === 'user' ? (
+              <div className="whitespace-pre-wrap font-sans select-text">{msg.content}</div>
+            ) : (
+              <MarkdownView content={msg.content} />
+            )}
+
+            <div className="mt-1 text-[10px] text-neutral-400 text-right">
+              {new Date(msg.author_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </div>
+          </div>
+
+          {msg.role === 'user' && (
+            <div className="w-8 h-8 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-neutral-300 shrink-0">
+              <User className="w-4 h-4" />
+            </div>
+          )}
+        </div>
+      ))}
+
+      {/* Active Streaming Turn */}
+      {activeRunId && (
+        <div className="flex gap-3 max-w-4xl mx-auto justify-start">
+          <div className="w-8 h-8 rounded-full bg-indigo-950 border border-indigo-700/50 flex items-center justify-center text-indigo-300 shrink-0 animate-pulse">
+            <Bot className="w-4 h-4" />
+          </div>
+
+          <div className="flex-1 bg-neutral-900/80 rounded-2xl rounded-bl-sm px-4 py-3 border border-neutral-800 shadow-md space-y-2">
+            {/* Reasoning Accordion */}
+            {reasoning && (
+              <ReasoningAccordion reasoning={reasoning} isStreaming={isStreaming} />
+            )}
+
+            {/* Live Tool Executions */}
+            {Object.values(activeTools).length > 0 && (
+              <div className="space-y-1">
+                {Object.values(activeTools).map((tool) => (
+                  <ToolCard key={tool.id} tool={tool} />
+                ))}
+              </div>
+            )}
+
+            {/* Streamed Assistant Content */}
+            {streamingOutput ? (
+              <MarkdownView content={streamingOutput} />
+            ) : (
+              !reasoning &&
+              Object.keys(activeTools).length === 0 && (
+                <div className="flex items-center space-x-2 text-xs text-neutral-400 py-1">
+                  <div className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+                  <span>Antigravity is preparing response...</span>
+                </div>
+              )
+            )}
+
+            {/* Status Footer */}
+            <div className="pt-2 border-t border-neutral-800/60 flex items-center justify-between text-[11px] text-neutral-400">
+              <div className="flex items-center space-x-1.5">
+                {activeRun?.state === 'running_tool' ? (
+                  <>
+                    <Clock className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="text-amber-300 font-mono">Running tool...</span>
+                  </>
+                ) : activeRun?.state === 'thinking' ? (
+                  <>
+                    <Bot className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                    <span className="text-indigo-300 font-medium">Reasoning...</span>
+                  </>
+                ) : activeRun?.state === 'cancelled' ? (
+                  <>
+                    <Ban className="w-3.5 h-3.5 text-neutral-400" />
+                    <span className="text-neutral-400">Run cancelled</span>
+                  </>
+                ) : activeRun?.state === 'failed' ? (
+                  <>
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+                    <span className="text-rose-400 font-medium">{activeRun.error_message || 'Failed'}</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+                    <span>Generating response...</span>
+                  </>
+                )}
+              </div>
+
+              {activeRun?.started_at && (
+                <span>Started {new Date(activeRun.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

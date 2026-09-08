@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agy-cockpit"
+version = "0.1.0"
+description = "Local-first web cockpit for operating Google Antigravity agents"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Antigravity Team" }
+]
+dependencies = [
+    "google-antigravity==0.1.16",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7.0",
+    "aiosqlite>=0.20.0",
+    "GitPython>=3.1.40",
+    "watchfiles>=0.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+agy-cockpit = "agy_cockpit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agy_cockpit*"]
+
+[tool.setuptools.package-data]
+"agy_cockpit.backend" = ["static/**/*", "static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
