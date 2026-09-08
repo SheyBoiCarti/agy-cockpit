@@ -1,7 +1,7 @@
 """Artifact service for registering, fetching, and previewing domain artifacts."""
 
 import os
-from typing import Optional, List
+from typing import Optional, List, Any
 import aiosqlite
 
 from agy_cockpit.backend.db.repositories.artifact_repository import ArtifactRepository
@@ -19,9 +19,10 @@ KIND_TO_MIME = {
 
 
 class ArtifactService:
-    def __init__(self, conn: aiosqlite.Connection):
+    def __init__(self, conn: aiosqlite.Connection, event_service: Any = None):
         self.conn = conn
         self.repo = ArtifactRepository(conn)
+        self.event_service = event_service
 
     async def register_artifact(
         self,
@@ -45,6 +46,54 @@ class ArtifactService:
             updated_at=now,
         )
         await self.repo.create(art)
+        if self.event_service:
+            await self.event_service.emit_event(
+                event_type="artifact_updated",
+                session_id="global",
+                payload={
+                    "artifact": {
+                        "id": art.id,
+                        "run_id": art.run_id,
+                        "kind": art.kind.value if hasattr(art.kind, "value") else str(art.kind),
+                        "name": art.name,
+                        "mime_type": art.mime_type,
+                        "path_or_storage_key": art.path_or_storage_key,
+                        "preview_supported": art.preview_supported,
+                        "created_at": art.created_at,
+                        "updated_at": art.updated_at,
+                    }
+                },
+                run_id=art.run_id,
+            )
+        return art
+
+    async def update_artifact(
+        self,
+        artifact_id: str,
+        path_or_storage_key: str,
+    ) -> Optional[Artifact]:
+        now = utc_now_iso()
+        await self.repo.update(artifact_id, path_or_storage_key, now)
+        art = await self.repo.get_by_id(artifact_id)
+        if art and self.event_service:
+            await self.event_service.emit_event(
+                event_type="artifact_updated",
+                session_id="global",
+                payload={
+                    "artifact": {
+                        "id": art.id,
+                        "run_id": art.run_id,
+                        "kind": art.kind.value if hasattr(art.kind, "value") else str(art.kind),
+                        "name": art.name,
+                        "mime_type": art.mime_type,
+                        "path_or_storage_key": art.path_or_storage_key,
+                        "preview_supported": art.preview_supported,
+                        "created_at": art.created_at,
+                        "updated_at": art.updated_at,
+                    }
+                },
+                run_id=art.run_id,
+            )
         return art
 
     async def get_artifact(self, artifact_id: str) -> Optional[Artifact]:

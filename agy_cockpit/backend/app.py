@@ -57,7 +57,7 @@ def create_app(
         settings_service = SettingsService(db_conn)
         model_catalog = ModelCatalogService()
         diff_service = DiffService()
-        artifact_service = ArtifactService(db_conn)
+        artifact_service = ArtifactService(db_conn, event_service=event_service)
         attachment_service = AttachmentService(
             db_conn,
             storage_dir=os.path.join(app_config.data_dir, "attachments"),
@@ -142,6 +142,13 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"Conversation '{conversation_id}' not found")
         try:
             att = await app.state.attachment_service.save_attachment(conversation_id, file)
+            await app.state.event_service.emit_event(
+                event_type="attachment_ready",
+                session_id="global",
+                payload={"attachment": att.model_dump()},
+                conversation_id=conversation_id,
+                replayable=False,
+            )
             return {"attachment": att.model_dump()}
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
