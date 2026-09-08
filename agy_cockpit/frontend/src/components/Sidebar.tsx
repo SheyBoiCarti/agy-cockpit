@@ -11,6 +11,7 @@ import {
   FolderOpen,
   X,
   Check,
+  Users,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -22,6 +23,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
   const activeWorkspaceId = useCockpitStore((s) => s.activeWorkspaceId);
   const conversationsMap = useCockpitStore((s) => s.conversations);
   const activeConversationId = useCockpitStore((s) => s.activeConversationId);
+  const activeDrawerTab = useCockpitStore((s) => s.activeDrawerTab);
+  const setActiveDrawerTab = useCockpitStore((s) => s.setActiveDrawerTab);
   const connectionState = useCockpitStore((s) => s.connectionState);
   const connectionError = useCockpitStore((s) => s.connectionError);
 
@@ -94,8 +97,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
         )}
       </div>
 
-      {/* New Conversation Button */}
-      <div className="p-3 border-b border-neutral-800/60">
+      {/* Navigation Buttons: New Conversation & AI Council */}
+      <div className="p-3 border-b border-neutral-800/60 space-y-2">
         <button
           onClick={handleCreateConversation}
           disabled={!activeWorkspace}
@@ -103,6 +106,26 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
         >
           <MessageSquarePlus className="w-4 h-4" />
           <span>New Conversation</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveDrawerTab(activeDrawerTab === 'council' ? null : 'council');
+          }}
+          className={`w-full flex items-center justify-between py-2 px-3 rounded-lg text-xs font-medium transition-all ${
+            activeDrawerTab === 'council'
+              ? 'bg-indigo-600/30 text-indigo-200 border border-indigo-500/50 shadow-sm'
+              : 'bg-neutral-900/90 text-neutral-300 hover:text-white hover:bg-neutral-800 border border-neutral-800/80'
+          }`}
+          title="Open AI Council Swarm Panel"
+        >
+          <div className="flex items-center space-x-2">
+            <Users className="w-4 h-4 text-indigo-400 shrink-0" />
+            <span className="font-semibold">AI Council</span>
+          </div>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono font-medium">
+            Swarm
+          </span>
         </button>
       </div>
 

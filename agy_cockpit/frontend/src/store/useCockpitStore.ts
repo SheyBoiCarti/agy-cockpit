@@ -17,7 +17,7 @@ import {
 import { SyncStatePayload } from '../types/protocol';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'recovering' | 'error';
-export type DrawerTab = 'diffs' | 'terminal' | 'subagents' | 'artifacts' | null;
+export type DrawerTab = 'diffs' | 'terminal' | 'subagents' | 'artifacts' | 'council' | null;
 
 interface CockpitState {
   // Connection

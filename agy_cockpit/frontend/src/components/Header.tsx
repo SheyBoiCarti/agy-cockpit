@@ -13,6 +13,7 @@ import {
   X,
   Sun,
   Moon,
+  Users,
 } from 'lucide-react';
 
 export const Header: React.FC = () => {
@@ -245,6 +246,20 @@ export const Header: React.FC = () => {
                 {artifactsCount}
               </span>
             )}
+          </button>
+
+          {/* AI Council */}
+          <button
+            onClick={() => toggleDrawerTab('council')}
+            className={`relative px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center space-x-1.5 ${
+              activeDrawerTab === 'council'
+                ? 'bg-indigo-600/30 text-indigo-200 border border-indigo-500/50 shadow-sm'
+                : 'bg-indigo-950/40 border border-indigo-800/50 text-indigo-300 hover:bg-indigo-900/60 hover:text-white'
+            }`}
+            title="AI Council (Gemini Swarm Deliberation)"
+          >
+            <Users className="w-4 h-4 text-indigo-400 shrink-0" />
+            <span className="font-semibold text-indigo-200">AI Council</span>
           </button>
 
           <div className="h-4 w-px bg-neutral-800 mx-1" />

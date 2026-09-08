@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useCockpitStore } from '../store/useCockpitStore';
 import { wsService } from '../services/websocket';
-import { Send, Square, Paperclip, AtSign, Loader2, X, Boxes, FileDiff, HelpCircle, Trash2 } from 'lucide-react';
+import { Send, Square, Paperclip, AtSign, Loader2, X, Boxes, FileDiff, HelpCircle, Trash2, Users, CheckCircle2 } from 'lucide-react';
 
 interface AttachedFile {
   id: string;
@@ -10,6 +10,8 @@ interface AttachedFile {
 }
 
 const SLASH_COMMANDS = [
+  { command: '/council', label: 'AI Council', description: 'Open Council panel / Deliberate', icon: Users },
+  { command: '/vote', label: 'Roll-Call Vote', description: 'Convene Council roll-call vote', icon: CheckCircle2 },
   { command: '/diff', label: 'View Diff', description: 'Open changed-files panel', icon: FileDiff },
   { command: '/agents', label: 'Subagents', description: 'Open subagents panel', icon: Boxes },
   { command: '/clear', label: 'Clear Input', description: 'Clear composer text only', icon: Trash2 },
@@ -55,7 +57,15 @@ export const Composer: React.FC = () => {
   const executeSlashCommand = (cmd: string) => {
     const trimmed = cmd.trim().toLowerCase();
     setSlashActive(false);
-    if (trimmed === '/diff') {
+    if (trimmed === '/council') {
+      setActiveDrawerTab('council');
+      setText('/council ');
+      return;
+    } else if (trimmed === '/vote') {
+      setActiveDrawerTab('council');
+      setText('/vote ');
+      return;
+    } else if (trimmed === '/diff') {
       setActiveDrawerTab('diffs');
       setText('');
     } else if (trimmed === '/agents') {
@@ -66,7 +76,7 @@ export const Composer: React.FC = () => {
       setAttachments([]);
     } else if (trimmed === '/help') {
       setText('');
-      setActiveDrawerTab('diffs');
+      setActiveDrawerTab('council');
     }
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -389,6 +399,16 @@ export const Composer: React.FC = () => {
               ) : (
                 <Paperclip className="w-4 h-4" />
               )}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                useCockpitStore.getState().setActiveDrawerTab('council');
+              }}
+              className="p-1.5 text-indigo-400 hover:text-indigo-200 hover:bg-neutral-800 rounded-lg transition-colors"
+              title="Open AI Council Swarm Panel"
+            >
+              <Users className="w-4 h-4" />
             </button>
           </div>
 

@@ -108,3 +108,58 @@ async def test_council_voting():
     assert "tally" in res
     assert len(res["votes"]) == 3
     assert res["outcome"] in ("PASSED", "FAILED", "TIED")
+
+
+@pytest.mark.asyncio
+async def test_run_service_council_integration(tmp_path):
+    from agy_cockpit.backend.db.connection import get_db_connection, init_db
+    from agy_cockpit.backend.domain.models import Workspace, Conversation, utc_now_iso
+    from agy_cockpit.backend.db.repositories import WorkspaceRepository, ConversationRepository, MessageRepository, SubagentRepository
+    from agy_cockpit.backend.services.event_service import EventService
+    from agy_cockpit.backend.services.approval_service import ApprovalService
+    from agy_cockpit.backend.services.run_service import RunService
+
+    db_path = str(tmp_path / "test.db")
+    await init_db(db_path)
+    conn = await get_db_connection(db_path)
+    try:
+        ws_repo = WorkspaceRepository(conn)
+        conv_repo = ConversationRepository(conn)
+        msg_repo = MessageRepository(conn)
+        sa_repo = SubagentRepository(conn)
+
+        ws = Workspace(display_name="test-ws", canonical_path=str(tmp_path))
+        await ws_repo.create(ws)
+
+        conv = Conversation(workspace_id=ws.id, title="Council Session", model_slug="gemini-3.8-flash-high")
+        await conv_repo.create(conv)
+
+        event_service = EventService(conn)
+        approval_service = ApprovalService(conn, event_service)
+        run_service = RunService(conn, event_service, approval_service)
+
+        # Trigger /council prompt
+        run = await run_service.start_prompt_run(
+            session_id="sess-1",
+            conversation_id=conv.id,
+            prompt="/council Should we migrate to microservices?",
+        )
+
+        # Await task
+        ctx = run_service._active_runs.get(run.id)
+        assert ctx is not None
+        await ctx.task
+
+        # Check that assistant message was created
+        messages = await msg_repo.list_by_conversation(conv.id)
+        assert len(messages) == 2  # user + assistant
+        asst = messages[1]
+        assert "AI Council Deliberation" in asst.content
+        assert "Stage 1: Independent Perspectives" in asst.content
+        assert "Stage 3: Council Synthesis" in asst.content
+
+        # Check that subagent nodes were registered
+        subagents = await sa_repo.list_by_run(run.id)
+        assert len(subagents) >= 3  # Architect, Security, Pragmatist, Synthesizer
+    finally:
+        await conn.close()

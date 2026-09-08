@@ -40,6 +40,7 @@ from agy_cockpit.backend.domain.models import (
 from agy_cockpit.backend.services.agent_service import (
     AntigravityAdapter,
     RealSDKAntigravityAdapter,
+    TurnResult,
     UnifiedAntigravityAdapter,
 )
 from agy_cockpit.backend.services.approval_service import ApprovalService
@@ -452,24 +453,122 @@ class RunService:
             return approved
 
         try:
-            # Delegate to adapter
-            result = await self.adapter.run_turn(
-                conversation_id=conv.id,
-                save_dir=conv.sdk_save_dir or f"/tmp/sessions/{conv.id}",
-                workspace_path=workspace_path,
-                prompt=prompt,
-                model_slug=model_slug,
-                policy_preset=policy_preset,
-                approval_handler=approval_handler,
-                on_thought=on_thought,
-                on_token=on_token,
-                on_tool_start=on_tool_start,
-                on_tool_finish=on_tool_finish,
-                cancellation_token=cancel_token,
-                on_tool_log=on_tool_log,
-                on_subagent_update=on_subagent_update,
-                attachments=attachments,
-            )
+            if prompt.strip().startswith("/council") and not cancel_token.is_set():
+                from agy_cockpit.council.council import AICouncil
+                topic = prompt.strip()[8:].strip() or "General architectural review and design evaluation"
+                await on_thought(f"Convening AI Council for deliberation on: '{topic}'\n")
+
+                council = AICouncil(
+                    num_agents=3,
+                    model_slug=model_slug or conv.model_slug or "gemini-3.8-flash-high",
+                    workspace_path=workspace_path,
+                )
+
+                for m in council.members:
+                    await on_subagent_update(f"sa-{m.id}", None, f"{m.name} ({m.title})", "running", f"Analyzing: {topic[:35]}...", 1)
+                await on_subagent_update("sa-synthesizer", None, "Synthesizer (Council Chair)", "running", "Waiting for stage deliberations...", 1)
+
+                delib_result = await council.deliberate(topic=topic)
+
+                for m in council.members:
+                    await on_subagent_update(f"sa-{m.id}", None, f"{m.name} ({m.title})", "completed", "Deliberation complete", 1)
+                await on_subagent_update("sa-synthesizer", None, "Synthesizer (Council Chair)", "completed", "Consensus synthesized", 1)
+
+                formatted_parts = [
+                    f"## 🏛️ AI Council Deliberation: {topic}\n\n",
+                    "### Stage 1: Independent Perspectives\n",
+                ]
+                for p in delib_result.stage_1_perspectives:
+                    formatted_parts.append(f"#### {p.member_name} ({p.member_title})\n{p.content}\n\n")
+
+                formatted_parts.append("### Stage 2: Cross-Examination & Debate\n")
+                for c in delib_result.stage_2_critiques:
+                    formatted_parts.append(f"#### {c.member_name} (Peer Review)\n{c.content}\n\n")
+
+                formatted_parts.append("### Stage 3: Council Synthesis & Actionable Consensus\n")
+                formatted_parts.append(f"{delib_result.final_synthesis}\n")
+
+                full_output = "".join(formatted_parts)
+                words = full_output.split(" ")
+                for i, w in enumerate(words):
+                    if cancel_token.is_set():
+                        break
+                    piece = w + (" " if i < len(words) - 1 else "")
+                    await on_token(piece)
+                    if len(words) > 1:
+                        await asyncio.sleep(0.005)
+
+                result = TurnResult(
+                    final_text=full_output,
+                    reasoning_text=f"AI Council completed 3-stage deliberation with {council.num_agents} Gemini agents.",
+                    state=RunState.COMPLETED,
+                )
+            elif prompt.strip().startswith("/vote") and not cancel_token.is_set():
+                from agy_cockpit.council.council import AICouncil
+                motion = prompt.strip()[5:].strip() or "Standard quality proposal"
+                await on_thought(f"Convening AI Council for roll-call vote on motion: '{motion}'\n")
+
+                council = AICouncil(
+                    num_agents=3,
+                    model_slug=model_slug or conv.model_slug or "gemini-3.8-flash-high",
+                    workspace_path=workspace_path,
+                )
+                for m in council.members:
+                    await on_subagent_update(f"sa-{m.id}", None, f"{m.name} ({m.title})", "running", "Casting vote...", 1)
+
+                vote_res = await council.vote(motion)
+
+                for m in council.members:
+                    await on_subagent_update(f"sa-{m.id}", None, f"{m.name} ({m.title})", "completed", "Vote recorded", 1)
+
+                tally = vote_res["tally"]
+                outcome = vote_res["outcome"]
+                out_parts = [
+                    f"## 🗳️ AI Council Roll-Call Vote\n\n",
+                    f"**Motion:** {motion}\n\n",
+                    "### Individual Member Votes\n",
+                ]
+                for v in vote_res["votes"]:
+                    badge = "✅ **APPROVE**" if v["vote"] == "APPROVE" else "❌ **REJECT**" if v["vote"] == "REJECT" else "⚠️ **ABSTAIN**"
+                    out_parts.append(f"- **{v['member']}** ({v['title']}): {badge} — {v['rationale']}\n")
+
+                out_parts.append(f"\n### Result: **{outcome}**\n")
+                out_parts.append(f"**Tally:** {tally['APPROVE']} Approve | {tally['REJECT']} Reject | {tally['ABSTAIN']} Abstain\n")
+
+                full_output = "".join(out_parts)
+                words = full_output.split(" ")
+                for i, w in enumerate(words):
+                    if cancel_token.is_set():
+                        break
+                    piece = w + (" " if i < len(words) - 1 else "")
+                    await on_token(piece)
+                    if len(words) > 1:
+                        await asyncio.sleep(0.005)
+
+                result = TurnResult(
+                    final_text=full_output,
+                    reasoning_text=f"AI Council completed roll-call vote: {outcome} ({tally}).",
+                    state=RunState.COMPLETED,
+                )
+            else:
+                # Delegate to adapter
+                result = await self.adapter.run_turn(
+                    conversation_id=conv.id,
+                    save_dir=conv.sdk_save_dir or f"/tmp/sessions/{conv.id}",
+                    workspace_path=workspace_path,
+                    prompt=prompt,
+                    model_slug=model_slug,
+                    policy_preset=policy_preset,
+                    approval_handler=approval_handler,
+                    on_thought=on_thought,
+                    on_token=on_token,
+                    on_tool_start=on_tool_start,
+                    on_tool_finish=on_tool_finish,
+                    cancellation_token=cancel_token,
+                    on_tool_log=on_tool_log,
+                    on_subagent_update=on_subagent_update,
+                    attachments=attachments,
+                )
 
             now = utc_now_iso()
             # If final answer or reasoning produced, persist assistant message
