@@ -52,7 +52,16 @@ def create_app(
         event_service = EventService(db_conn)
         replay_service = ReplayService(db_conn)
         approval_service = ApprovalService(db_conn, event_service)
-        workspace_service = WorkspaceService(db_conn)
+
+        async def on_ws_file_changed(workspace_id: str, rel_path: str, status: str):
+            await event_service.emit_event(
+                event_type="file_changed",
+                session_id="global",
+                payload={"workspace_id": workspace_id, "file_path": rel_path, "status": status},
+                replayable=False,
+            )
+
+        workspace_service = WorkspaceService(db_conn, on_file_change=on_ws_file_changed)
         conversation_service = ConversationService(db_conn, app_config)
         settings_service = SettingsService(db_conn)
         model_catalog = ModelCatalogService()
@@ -107,6 +116,7 @@ def create_app(
         yield
 
         # Shutdown: cleanup
+        workspace_service.stop_all_watchers()
         await db_conn.close()
         logger.info("Antigravity Cockpit backend shut down.")
 

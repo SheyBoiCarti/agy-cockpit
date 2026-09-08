@@ -1,9 +1,10 @@
-"""Workspace service for managing workspaces and indexing workspace files."""
-
+import asyncio
+import logging
 import os
 import pathlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Awaitable
 import aiosqlite
+import watchfiles
 
 from agy_cockpit.backend.db.repositories.workspace_repository import WorkspaceRepository
 from agy_cockpit.backend.domain.models import Workspace, utc_now_iso
@@ -13,6 +14,8 @@ from agy_cockpit.backend.domain.workspace import (
     get_relative_workspace_path,
     resolve_safe_path,
 )
+
+logger = logging.getLogger(__name__)
 
 IGNORED_DIRECTORIES = {
     ".git",
@@ -29,14 +32,71 @@ IGNORED_DIRECTORIES = {
 
 
 class WorkspaceService:
-    """Manages workspace lifecycle and safe file searching."""
+    """Manages workspace lifecycle, real-time filesystem watching, and safe file searching."""
 
-    def __init__(self, conn: aiosqlite.Connection):
+    def __init__(
+        self,
+        conn: aiosqlite.Connection,
+        on_file_change: Optional[Callable[[str, str, str], Awaitable[None]]] = None,
+    ):
         self.conn = conn
         self.repo = WorkspaceRepository(conn)
+        self.on_file_change = on_file_change
+        self._watch_tasks: Dict[str, asyncio.Task] = {}
+        self._stop_events: Dict[str, asyncio.Event] = {}
+
+    def start_watcher(self, workspace_id: str, path: str) -> None:
+        """Starts a background watchfiles watcher on the given workspace path."""
+        self.stop_watcher(workspace_id)
+        stop_evt = asyncio.Event()
+        self._stop_events[workspace_id] = stop_evt
+
+        async def _watch_loop():
+            try:
+                def _filter(change: watchfiles.Change, p: str) -> bool:
+                    parts = pathlib.Path(p).parts
+                    return not any(part in IGNORED_DIRECTORIES for part in parts)
+
+                async for changes in watchfiles.awatch(path, stop_event=stop_evt, watch_filter=_filter):
+                    for change, file_p in changes:
+                        try:
+                            rel_p = get_relative_workspace_path(path, file_p)
+                        except Exception:
+                            continue
+                        status_str = "modified"
+                        if change == watchfiles.Change.added:
+                            status_str = "added"
+                        elif change == watchfiles.Change.deleted:
+                            status_str = "deleted"
+
+                        if self.on_file_change:
+                            try:
+                                await self.on_file_change(workspace_id, rel_p, status_str)
+                            except Exception as ce:
+                                logger.debug("Error in on_file_change callback: %s", ce)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug("Filesystem watcher for %s stopped: %s", path, e)
+
+        self._watch_tasks[workspace_id] = asyncio.create_task(_watch_loop())
+
+    def stop_watcher(self, workspace_id: str) -> None:
+        """Stops the filesystem watcher for a given workspace."""
+        if workspace_id in self._stop_events:
+            self._stop_events[workspace_id].set()
+            self._stop_events.pop(workspace_id, None)
+        task = self._watch_tasks.pop(workspace_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    def stop_all_watchers(self) -> None:
+        """Stops all active filesystem watchers."""
+        for ws_id in list(self._watch_tasks.keys()):
+            self.stop_watcher(ws_id)
 
     async def open_workspace(self, path: str) -> Workspace:
-        """Opens or creates a workspace at the given path."""
+        """Opens or creates a workspace at the given path and starts watcher."""
         canon_path = canonicalize_workspace_path(path)
         if not os.path.exists(canon_path):
             raise WorkspaceSecurityError(f"Workspace path '{canon_path}' does not exist.")
@@ -48,6 +108,7 @@ class WorkspaceService:
         if existing:
             await self.repo.update_last_opened(existing.id, now)
             existing.last_opened_at = now
+            self.start_watcher(existing.id, canon_path)
             return existing
 
         display_name = os.path.basename(canon_path) or canon_path
@@ -57,7 +118,9 @@ class WorkspaceService:
             created_at=now,
             last_opened_at=now,
         )
-        return await self.repo.create(ws)
+        created = await self.repo.create(ws)
+        self.start_watcher(created.id, canon_path)
+        return created
 
     async def list_workspaces(self) -> List[Workspace]:
         return await self.repo.list_all()

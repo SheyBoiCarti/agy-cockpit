@@ -437,3 +437,46 @@ async def test_cli_adapter_tool_rejection_halts_process(tmp_path):
     assert cancel_token.is_set()
     assert "rejected" in result.final_text.lower()
 
+
+@pytest.mark.asyncio
+async def test_workspace_filesystem_watcher(tmp_path):
+    """Verifies that WorkspaceService live watcher detects filesystem changes using watchfiles."""
+    from agy_cockpit.backend.services.workspace_service import WorkspaceService
+    from agy_cockpit.backend.db.connection import get_db_connection, init_db
+
+    db_path = str(tmp_path / "test.db")
+    ws_dir = str(tmp_path / "ws")
+    os.makedirs(ws_dir, exist_ok=True)
+
+    await init_db(db_path)
+    conn = await get_db_connection(db_path)
+    changes_detected = []
+    change_event = asyncio.Event()
+
+    async def on_change(ws_id, rel_path, status):
+        changes_detected.append((rel_path, status))
+        change_event.set()
+
+    svc = WorkspaceService(conn, on_file_change=on_change)
+    ws = await svc.open_workspace(ws_dir)
+    await asyncio.sleep(0.2)
+
+    try:
+        # Create a file in workspace
+        new_file = os.path.join(ws_dir, "hello.txt")
+        with open(new_file, "w") as f:
+            f.write("hello world")
+
+        # Wait for watcher to pick it up (with timeout)
+        try:
+            await asyncio.wait_for(change_event.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            pass
+
+        assert len(changes_detected) > 0
+        assert any(c[0] == "hello.txt" for c in changes_detected)
+    finally:
+        svc.stop_all_watchers()
+        await conn.close()
+
+
