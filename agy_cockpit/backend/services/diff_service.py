@@ -14,7 +14,7 @@ from agy_cockpit.backend.domain.workspace import resolve_safe_path
 
 
 def is_git_workspace(workspace_path: str) -> bool:
-    return os.path.isdir(os.path.join(workspace_path, ".git"))
+    return os.path.exists(os.path.join(workspace_path, ".git"))
 
 logger = logging.getLogger(__name__)
 

@@ -73,7 +73,10 @@ export const RightDrawer: React.FC = () => {
     }
     setIsLoadingArtifact(true);
     try {
-      const res = await fetch(`/api/artifacts/${art.id}/content`);
+      const token = (typeof window !== 'undefined' && localStorage.getItem('agy_token')) || '';
+      const res = await fetch(`/api/artifacts/${art.id}/content?token=${encodeURIComponent(token)}`, {
+        headers: token ? { 'x-antigravity-token': token } : {},
+      });
       if (res.ok) {
         const text = await res.text();
         setArtifactContent(text);
@@ -408,7 +411,9 @@ export const RightDrawer: React.FC = () => {
                   {previewArtifact.mime_type.startsWith('image/') ? (
                     <div className="flex items-center justify-center p-4">
                       <img
-                        src={`/api/artifacts/${previewArtifact.id}/content`}
+                        src={`/api/artifacts/${previewArtifact.id}/content?token=${encodeURIComponent(
+                          (typeof window !== 'undefined' && localStorage.getItem('agy_token')) || ''
+                        )}`}
                         alt={previewArtifact.name}
                         className="max-h-[70vh] rounded-lg border border-neutral-800 object-contain shadow-lg"
                       />

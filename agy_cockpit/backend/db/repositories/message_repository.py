@@ -16,8 +16,8 @@ class MessageRepository:
         attachment_json = json.dumps(msg.attachment_ids)
         await self.conn.execute(
             """
-            INSERT INTO messages (id, conversation_id, role, author_time, content, attachment_ids)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, conversation_id, role, author_time, content, attachment_ids, reasoning)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 msg.id,
@@ -26,6 +26,7 @@ class MessageRepository:
                 msg.author_time,
                 msg.content,
                 attachment_json,
+                msg.reasoning or "",
             ),
         )
         await self.conn.commit()
@@ -40,6 +41,7 @@ class MessageRepository:
                 return None
             data = dict(row)
             data["attachment_ids"] = json.loads(data["attachment_ids"]) if data.get("attachment_ids") else []
+            data["reasoning"] = data.get("reasoning") or ""
             return Message(**data)
 
     async def list_by_conversation(self, conv_id: str) -> List[Message]:
@@ -52,6 +54,7 @@ class MessageRepository:
             for r in rows:
                 data = dict(r)
                 data["attachment_ids"] = json.loads(data["attachment_ids"]) if data.get("attachment_ids") else []
+                data["reasoning"] = data.get("reasoning") or ""
                 result.append(Message(**data))
             return result
 

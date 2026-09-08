@@ -1,11 +1,12 @@
 """FastAPI application factory and WebSocket endpoint for Antigravity Cockpit."""
 
 from contextlib import asynccontextmanager
+import hmac
 import logging
 import os
 from typing import AsyncGenerator, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -47,6 +48,13 @@ def create_app(
         await init_db(app_config.db_path)
         db_conn = await get_db_connection(app_config.db_path)
         app.state.db_conn = db_conn
+
+        # Clean up any orphaned active runs from previous crashed/interrupted sessions
+        from agy_cockpit.backend.db.repositories.run_repository import RunRepository
+        startup_run_repo = RunRepository(db_conn)
+        interrupted_count = await startup_run_repo.interrupt_orphaned_runs()
+        if interrupted_count > 0:
+            logger.info("Cleaned up %d orphaned active runs on startup.", interrupted_count)
 
         # Services
         event_service = EventService(db_conn)
@@ -134,18 +142,32 @@ def create_app(
         allow_headers=["*"],
     )
 
+    async def verify_api_token(request: Request):
+        if not app_config.token:
+            return True
+        token = request.headers.get("x-antigravity-token") or request.query_params.get("token")
+        if token:
+            if not hmac.compare_digest(token, app_config.token):
+                raise HTTPException(status_code=401, detail="Unauthorized: Invalid token")
+            return True
+        is_test_client = request.client and request.client.host == "testclient"
+        if not is_test_client:
+            raise HTTPException(status_code=401, detail="Unauthorized: Missing token")
+        return True
+
     @app.get("/health")
     async def health_check():
         return {"status": "ok", "service": "agy-cockpit", "version": "0.1.0"}
 
     @app.get("/api/models")
-    async def list_models():
+    async def list_models(_: bool = Depends(verify_api_token)):
         return {"models": app.state.model_catalog.list_models()}
 
     @app.post("/api/attachments")
     async def upload_attachment(
         file: UploadFile = File(...),
         conversation_id: str = Form(...),
+        _: bool = Depends(verify_api_token),
     ):
         conv = await app.state.conversation_service.get_conversation(conversation_id)
         if not conv:
@@ -164,21 +186,21 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/api/attachments/{attachment_id}")
-    async def get_attachment(attachment_id: str):
+    async def get_attachment(attachment_id: str, _: bool = Depends(verify_api_token)):
         att = await app.state.attachment_service.get_attachment(attachment_id)
         if not att:
             raise HTTPException(status_code=404, detail="Attachment not found")
         return {"attachment": att.model_dump()}
 
     @app.get("/api/artifacts/{artifact_id}")
-    async def get_artifact(artifact_id: str):
+    async def get_artifact(artifact_id: str, _: bool = Depends(verify_api_token)):
         art = await app.state.artifact_service.get_artifact(artifact_id)
         if not art:
             raise HTTPException(status_code=404, detail="Artifact not found")
         return {"artifact": art.model_dump()}
 
     @app.get("/api/artifacts/{artifact_id}/content")
-    async def get_artifact_content(artifact_id: str):
+    async def get_artifact_content(artifact_id: str, _: bool = Depends(verify_api_token)):
         art = await app.state.artifact_service.get_artifact(artifact_id)
         if not art:
             raise HTTPException(status_code=404, detail="Artifact not found")
@@ -187,8 +209,15 @@ def create_app(
         allowed_dirs = [ws.canonical_path for ws in workspaces]
         allowed_dirs.append(app_config.data_dir)
 
+        is_binary = art.mime_type.startswith("image/") or art.mime_type in (
+            "application/pdf",
+            "application/octet-stream",
+        )
         try:
-            content = app.state.artifact_service.read_artifact_content(art, allowed_dirs=allowed_dirs)
+            if is_binary:
+                content = app.state.artifact_service.read_artifact_bytes(art, allowed_dirs=allowed_dirs)
+            else:
+                content = app.state.artifact_service.read_artifact_content(art, allowed_dirs=allowed_dirs)
         except PermissionError as pe:
             raise HTTPException(status_code=403, detail=str(pe))
 

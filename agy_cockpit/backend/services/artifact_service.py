@@ -124,3 +124,25 @@ class ArtifactService:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 return f.read(500_000)
         return artifact.path_or_storage_key
+
+    def read_artifact_bytes(
+        self,
+        artifact: Artifact,
+        allowed_dirs: Optional[List[str]] = None,
+        max_bytes: int = 10_000_000,
+    ) -> bytes:
+        """Reads raw binary content if file exists on disk and is within allowed directories."""
+        path = os.path.abspath(artifact.path_or_storage_key)
+        if allowed_dirs:
+            is_allowed = any(
+                path == os.path.abspath(d) or path.startswith(os.path.abspath(d) + os.sep)
+                for d in allowed_dirs
+            )
+            if not is_allowed:
+                raise PermissionError(f"Access to path '{path}' is outside allowed directories.")
+
+        if os.path.exists(path) and os.path.isfile(path):
+            with open(path, "rb") as f:
+                return f.read(max_bytes)
+        return artifact.path_or_storage_key.encode("utf-8")
+

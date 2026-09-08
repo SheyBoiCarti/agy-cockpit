@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { wsService } from './services/websocket';
+import { useCockpitStore } from './store/useCockpitStore';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { ChatTimeline } from './components/ChatTimeline';
@@ -13,6 +14,19 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     wsService.connect();
+
+    // Fetch dynamic model catalog
+    const token = localStorage.getItem('agy_token') || '';
+    fetch('/api/models', {
+      headers: token ? { 'x-antigravity-token': token } : {},
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(res)))
+      .then((data) => {
+        if (data.models && Array.isArray(data.models)) {
+          useCockpitStore.getState().setModels(data.models);
+        }
+      })
+      .catch((err) => console.warn('Failed to load dynamic models', err));
   }, []);
 
   return (

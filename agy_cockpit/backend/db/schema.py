@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     author_time TEXT NOT NULL,
     content TEXT NOT NULL,
+    reasoning TEXT NOT NULL DEFAULT '',
     attachment_ids TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );

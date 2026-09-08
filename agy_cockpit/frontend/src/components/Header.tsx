@@ -11,6 +11,8 @@ import {
   Edit2,
   Check,
   X,
+  Sun,
+  Moon,
 } from 'lucide-react';
 
 export const Header: React.FC = () => {
@@ -26,6 +28,23 @@ export const Header: React.FC = () => {
   const changedFilesCount = useCockpitStore((s) => Object.keys(s.changedFiles).length);
   const subagentsCount = useCockpitStore((s) => Object.keys(s.subagents).length);
   const artifactsCount = useCockpitStore((s) => Object.keys(s.artifacts).length);
+
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (typeof window !== 'undefined' && (localStorage.getItem('agy_theme') as 'dark' | 'light')) || 'dark';
+  });
+
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('agy_theme', nextTheme);
+      if (nextTheme === 'dark') {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    }
+  };
 
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState('');
@@ -222,6 +241,17 @@ export const Header: React.FC = () => {
                 {artifactsCount}
               </span>
             )}
+          </button>
+
+          <div className="h-4 w-px bg-neutral-800 mx-1" />
+
+          {/* Theme Toggle */}
+          <button
+            onClick={toggleTheme}
+            className="p-2 rounded-lg text-xs font-medium text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
+            title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+          >
+            {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-indigo-400" />}
           </button>
         </div>
       </div>

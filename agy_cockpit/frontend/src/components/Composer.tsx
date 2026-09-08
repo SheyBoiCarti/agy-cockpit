@@ -112,8 +112,10 @@ export const Composer: React.FC = () => {
         formData.append('file', file);
         formData.append('conversation_id', activeConversationId);
 
+        const token = (typeof window !== 'undefined' && localStorage.getItem('agy_token')) || '';
         const res = await fetch('/api/attachments', {
           method: 'POST',
+          headers: token ? { 'x-antigravity-token': token } : {},
           body: formData,
         });
 

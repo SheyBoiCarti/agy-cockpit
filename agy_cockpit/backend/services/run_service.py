@@ -90,6 +90,7 @@ class RunService:
         self.artifact_repo = ArtifactRepository(conn)
 
         self._active_runs: Dict[str, ActiveRunContext] = {}
+        self._run_locks: Dict[str, asyncio.Lock] = {}
 
     def is_run_active(self, run_id: str) -> bool:
         return run_id in self._active_runs
@@ -103,30 +104,34 @@ class RunService:
         model_slug: Optional[str] = None,
     ) -> Run:
         """Initiates an execution turn for a prompt."""
-        # 1. Validate conversation and workspace
-        conv = await self.conv_repo.get_by_id(conversation_id)
-        if not conv:
-            raise ValueError(f"Conversation '{conversation_id}' not found.")
+        if conversation_id not in self._run_locks:
+            self._run_locks[conversation_id] = asyncio.Lock()
 
-        ws = await self.ws_repo.get_by_id(conv.workspace_id)
-        if not ws:
-            raise ValueError(f"Workspace '{conv.workspace_id}' not found.")
+        async with self._run_locks[conversation_id]:
+            # 1. Validate conversation and workspace
+            conv = await self.conv_repo.get_by_id(conversation_id)
+            if not conv:
+                raise ValueError(f"Conversation '{conversation_id}' not found.")
 
-        # 2. Validate attachments if provided
-        if attachment_ids:
-            for att_id in attachment_ids:
-                att = await self.attachment_repo.get_by_id(att_id)
-                if not att or att.conversation_id != conversation_id:
-                    raise ValueError(
-                        f"Attachment '{att_id}' not found or does not belong to conversation '{conversation_id}'."
-                    )
+            ws = await self.ws_repo.get_by_id(conv.workspace_id)
+            if not ws:
+                raise ValueError(f"Workspace '{conv.workspace_id}' not found.")
 
-        # 3. Check for existing active run in this conversation
-        existing_run = await self.run_repo.get_active_for_conversation(conversation_id)
-        if existing_run and existing_run.id in self._active_runs:
-            raise RunAlreadyActiveError(
-                f"Conversation '{conversation_id}' already has an active run ({existing_run.id})."
-            )
+            # 2. Validate attachments if provided
+            if attachment_ids:
+                for att_id in attachment_ids:
+                    att = await self.attachment_repo.get_by_id(att_id)
+                    if not att or att.conversation_id != conversation_id:
+                        raise ValueError(
+                            f"Attachment '{att_id}' not found or does not belong to conversation '{conversation_id}'."
+                        )
+
+            # 3. Check for existing active run in this conversation
+            existing_run = await self.run_repo.get_active_for_conversation(conversation_id)
+            if existing_run and not existing_run.state.is_terminal:
+                raise RunAlreadyActiveError(
+                    f"Conversation '{conversation_id}' already has an active run ({existing_run.id})."
+                )
 
         # 4. Persist user message
         now = utc_now_iso()
@@ -467,13 +472,14 @@ class RunService:
             )
 
             now = utc_now_iso()
-            # If final answer produced, persist assistant message
-            if result.final_text:
+            # If final answer or reasoning produced, persist assistant message
+            if result.final_text or result.reasoning_text:
                 asst_msg = Message(
                     conversation_id=conv.id,
                     role=MessageRole.ASSISTANT,
                     author_time=now,
-                    content=result.final_text,
+                    content=result.final_text or "",
+                    reasoning=result.reasoning_text or "",
                 )
                 await self.msg_repo.create(asst_msg)
 
@@ -606,5 +612,19 @@ class RunService:
         run = await self.run_repo.get_by_id(run_id)
         if run and not run.state.is_terminal:
             await self.run_repo.update_state(run_id, RunState.CANCELLED, completed_at=now)
+            await self.event_service.emit_event(
+                event_type="run_cancelled",
+                session_id=run.conversation_id,
+                payload={"run_id": run_id, "conversation_id": run.conversation_id},
+                run_id=run.id,
+                replayable=True,
+            )
+            await self.event_service.emit_event(
+                event_type="run_state_changed",
+                session_id=run.conversation_id,
+                payload={"run_id": run_id, "conversation_id": run.conversation_id, "state": RunState.CANCELLED.value},
+                run_id=run.id,
+                replayable=True,
+            )
             return True
         return False

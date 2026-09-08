@@ -283,7 +283,18 @@ class WebSocketRouter:
                 last_user_msg_id = m.id
             elif role_val == "assistant" and last_user_msg_id and last_user_msg_id in run_tools_map:
                 md["tools"] = run_tools_map[last_user_msg_id]
+            if getattr(m, "reasoning", None):
+                md["reasoning"] = m.reasoning
             msg_dicts.append(md)
+
+        # Query historical artifacts
+        artifacts_list = []
+        if self.artifact_service:
+            try:
+                arts = await self.artifact_service.list_by_conversation(conv.id)
+                artifacts_list = [a.model_dump() for a in arts]
+            except Exception as ae:
+                logger.warning("Failed listing artifacts for conversation %s: %s", conv.id, ae)
 
         # Check for active run
         active_run = None
@@ -299,6 +310,7 @@ class WebSocketRouter:
             payload={
                 "conversation": conv.model_dump(),
                 "messages": msg_dicts,
+                "artifacts": artifacts_list,
                 "active_run": active_run,
             },
         )
@@ -337,6 +349,13 @@ class WebSocketRouter:
         if not conv_id:
             return
         await self.conversation_service.archive_conversation(conv_id)
+        event = create_server_event(
+            event_type="conversation_archived",
+            session_id=session.session_id,
+            conversation_id=conv_id,
+            payload={"conversation_id": conv_id},
+        )
+        await session.send_event(event)
 
     async def _handle_send_prompt(self, session: ClientSession, cmd: ClientCommand) -> None:
         if not self.run_service:

@@ -51,5 +51,12 @@ async def init_db(db_path: Optional[str] = None) -> None:
                 (applied_at,),
             )
             await conn.commit()
+
+        # Ensure 'reasoning' column exists in messages table for backward compatibility
+        try:
+            await conn.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
+            await conn.commit()
+        except Exception:
+            pass
     finally:
         await conn.close()

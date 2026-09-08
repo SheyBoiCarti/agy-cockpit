@@ -68,6 +68,7 @@ class Message(BaseModel):
     role: MessageRole
     author_time: str = Field(default_factory=utc_now_iso)
     content: str
+    reasoning: Optional[str] = ""
     attachment_ids: List[str] = Field(default_factory=list)
 
 

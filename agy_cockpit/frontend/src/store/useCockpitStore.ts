@@ -99,6 +99,7 @@ interface CockpitState {
   setSelectedDiffFile: (file: string | null, diffData?: { original: string; modified: string; language: string; is_binary?: boolean; truncated?: boolean } | null) => void;
   setSettings: (settings: Partial<Settings>) => void;
   setModels: (models: ModelOption[]) => void;
+  setArtifacts: (artifacts: Artifact[]) => void;
   setMentionSearch: (query: string, results: Array<{ path: string; is_directory: boolean }>, isSearching: boolean) => void;
 }
 
@@ -202,6 +203,12 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       pendingApproval: null,
       pendingApprovals: [],
       activeRunId: null,
+      changedFiles: {},
+      subagents: {},
+      artifacts: {},
+      toolLogs: {},
+      selectedDiffFile: null,
+      diffData: null,
     });
   },
 
@@ -254,10 +261,12 @@ export const useCockpitStore = create<CockpitState>((set) => ({
   startRun: (run) => {
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('agy_active_run_id', run.id);
+      sessionStorage.setItem('agy_last_seen_sequence', '0');
     }
     return set((state) => ({
       runs: { ...state.runs, [run.id]: run },
       activeRunId: run.id,
+      lastSequence: 0,
       reasoning: '',
       streamingOutput: '',
       activeTools: {},
@@ -525,6 +534,11 @@ export const useCockpitStore = create<CockpitState>((set) => ({
 
   setModels: (models) =>
     set({ models }),
+
+  setArtifacts: (artifacts) =>
+    set({
+      artifacts: Object.fromEntries(artifacts.map((a) => [a.id, a])),
+    }),
 
   setMentionSearch: (mentionQuery, mentionResults, isSearchingMention) =>
     set({ mentionQuery, mentionResults, isSearchingMention }),

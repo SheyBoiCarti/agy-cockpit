@@ -62,7 +62,9 @@ class AttachmentService:
                 f"MIME type '{mime}' is not supported. Allowed: {', '.join(sorted(self.allowed_mimes))}"
             )
 
-        storage_filename = f"{uuid.uuid4().hex}"
+        orig_filename = os.path.basename(upload_file.filename or "attachment")
+        ext = os.path.splitext(orig_filename)[1]
+        storage_filename = f"{uuid.uuid4().hex}{ext}"
         storage_path = os.path.join(self.storage_dir, storage_filename)
 
         hasher = hashlib.sha256()

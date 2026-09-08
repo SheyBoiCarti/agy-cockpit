@@ -173,9 +173,18 @@ class WebSocketService {
           if (event.payload.messages) {
             store.setMessages(event.payload.conversation.id, event.payload.messages);
           }
+          if (event.payload.artifacts) {
+            store.setArtifacts(event.payload.artifacts);
+          }
           if (event.payload.active_run) {
             store.startRun(event.payload.active_run);
           }
+        }
+        break;
+
+      case 'conversation_archived':
+        if (event.payload?.conversation_id) {
+          store.updateConversation(event.payload.conversation_id, { is_archived: true });
         }
         break;
 

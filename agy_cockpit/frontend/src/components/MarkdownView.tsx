@@ -1,6 +1,8 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import 'highlight.js/styles/github-dark.css';
 
 interface MarkdownViewProps {
   content: string;
@@ -11,6 +13,7 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
     <div className="prose prose-invert prose-sm max-w-none break-words leading-relaxed select-text">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
         components={{
           a: ({ node, ...props }) => (
             <a

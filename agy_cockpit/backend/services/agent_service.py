@@ -169,7 +169,16 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                     try:
                         media_items.append(agy.types.from_file(att_path))
                     except Exception as me:
-                        logger.warning("Failed loading attachment %s: %s", att_path, me)
+                        logger.warning("from_file failed on %s: %s, falling back to from_bytes", att_path, me)
+                        try:
+                            import mimetypes
+                            mime, _ = mimetypes.guess_type(att_path)
+                            mime_type = mime or "application/octet-stream"
+                            with open(att_path, "rb") as f:
+                                data = f.read()
+                            media_items.append(agy.types.from_bytes(data, mime_type=mime_type))
+                        except Exception as e2:
+                            logger.error("Failed loading attachment %s via from_bytes: %s", att_path, e2)
             if media_items:
                 chat_input = [prompt, *media_items]
 
@@ -201,6 +210,7 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                     except Exception:
                         pass
 
+                active_subagents_stack: List[str] = []
                 async def consume_tools():
                     try:
                         async for call in response.tool_calls:
@@ -209,10 +219,22 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                             await on_tool_start(call_id, call.name, call.args)
                             if call.name in ("start_subagent", "invoke_subagent", "define_subagent") and on_subagent_update:
                                 args = call.args or {}
-                                role = args.get("Role") or args.get("role") or "Subagent"
-                                task = args.get("Prompt") or args.get("task") or args.get("description") or f"Executing {call.name}"
-                                sa_id = f"subagent-{call_id}"
-                                await on_subagent_update(sa_id, None, role, "running", task, 1)
+                                subagent_items = args.get("Subagents") or args.get("subagents") or []
+                                parent_sa_id = active_subagents_stack[-1] if active_subagents_stack else None
+                                current_depth = len(active_subagents_stack) + 1
+                                if isinstance(subagent_items, list) and subagent_items:
+                                    for idx, sa_item in enumerate(subagent_items):
+                                        sa_role = sa_item.get("Role") or sa_item.get("role") or sa_item.get("TypeName") or "Subagent"
+                                        sa_task = sa_item.get("Prompt") or sa_item.get("prompt") or "Executing subagent task"
+                                        sub_id = f"subagent-{call_id}-{idx}"
+                                        active_subagents_stack.append(sub_id)
+                                        await on_subagent_update(sub_id, parent_sa_id, sa_role, "running", sa_task, current_depth)
+                                else:
+                                    role = args.get("Role") or args.get("role") or "Subagent"
+                                    task = args.get("Prompt") or args.get("task") or args.get("description") or f"Executing {call.name}"
+                                    sa_id = f"subagent-{call_id}"
+                                    active_subagents_stack.append(sa_id)
+                                    await on_subagent_update(sa_id, parent_sa_id, role, "running", task, current_depth)
                     except Exception:
                         pass
 
@@ -315,6 +337,7 @@ class CLISubscriptionAdapter(AntigravityAdapter):
         accumulated_thoughts: List[str] = []
         accumulated_tokens: List[str] = []
         active_tools: Dict[str, str] = {}
+        cli_subagents_stack: List[str] = []
 
         proc = None
         try:
@@ -446,7 +469,19 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                                 sa_id = subagent_info.get("conversation_id") or f"subagent-{step_idx}"
                                 role = subagent_info.get("role") or tool_info.get("parameters", {}).get("Role") or "Subagent"
                                 sa_state = "completed" if state == "DONE" else "running"
-                                await on_subagent_update(sa_id, None, role, sa_state, f"Executing {tool_name}", 1)
+                                parent_sa_id = subagent_info.get("parent_conversation_id") or (
+                                    cli_subagents_stack[-1] if cli_subagents_stack and cli_subagents_stack[-1] != sa_id else None
+                                )
+                                if sa_id in cli_subagents_stack:
+                                    depth = cli_subagents_stack.index(sa_id) + 1
+                                else:
+                                    depth = len(cli_subagents_stack) + 1
+
+                                if sa_state == "running" and sa_id not in cli_subagents_stack:
+                                    cli_subagents_stack.append(sa_id)
+                                elif sa_state in ("completed", "done", "failed") and sa_id in cli_subagents_stack:
+                                    cli_subagents_stack.remove(sa_id)
+                                await on_subagent_update(sa_id, parent_sa_id, role, sa_state, f"Executing {tool_name}", depth)
 
                     elif event_name == "result":
                         res = data.get("result", {})
