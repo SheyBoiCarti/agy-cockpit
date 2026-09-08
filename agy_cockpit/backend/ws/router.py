@@ -35,6 +35,8 @@ class WebSocketRouter:
         approval_service: Any = None,
         settings_service: Any = None,
         diff_service: Any = None,
+        attachment_service: Any = None,
+        artifact_service: Any = None,
     ):
         self.replay_service = replay_service
         self.workspace_service = workspace_service
@@ -43,6 +45,8 @@ class WebSocketRouter:
         self.approval_service = approval_service
         self.settings_service = settings_service
         self.diff_service = diff_service
+        self.attachment_service = attachment_service
+        self.artifact_service = artifact_service
         self.handlers: Dict[str, CommandHandler] = {}
         self._register_default_handlers()
 
@@ -66,6 +70,9 @@ class WebSocketRouter:
         self.handlers["search_workspace"] = self._handle_search_workspace
         self.handlers["update_settings"] = self._handle_update_settings
         self.handlers["get_file_diff"] = self._handle_get_file_diff
+        self.handlers["upload_attachment"] = self._handle_upload_attachment
+        self.handlers["get_artifact"] = self._handle_get_artifact
+
 
     async def _handle_hello(self, session: ClientSession, cmd: ClientCommand) -> None:
         settings_payload = {"default_model": "gemini-3.8-flash-high", "policy_preset": "request-review"}
@@ -539,6 +546,135 @@ class WebSocketRouter:
                 request_id=cmd.request_id,
             )
             await session.send_event(err)
+
+    async def _handle_upload_attachment(self, session: ClientSession, cmd: ClientCommand) -> None:
+        if not self.attachment_service:
+            err = create_protocol_error(
+                session_id=session.session_id,
+                error_code=ProtocolErrorCode.INTERNAL_ERROR,
+                message="AttachmentService not configured",
+                request_id=cmd.request_id,
+            )
+            await session.send_event(err)
+            return
+
+        import base64
+        filename = cmd.payload.get("filename", "attachment")
+        mime_type = cmd.payload.get("mime_type", "application/octet-stream")
+        data_base64 = cmd.payload.get("data_base64", "")
+        conv_id = cmd.conversation_id or cmd.payload.get("conversation_id") or session.active_conversation_id
+
+        if not conv_id:
+            err = create_protocol_error(
+                session_id=session.session_id,
+                error_code=ProtocolErrorCode.CONVERSATION_NOT_FOUND,
+                message="Conversation ID required for uploading attachments",
+                request_id=cmd.request_id,
+            )
+            await session.send_event(err)
+            return
+
+        try:
+            raw_bytes = base64.b64decode(data_base64)
+            att = await self.attachment_service.save_attachment_bytes(
+                conversation_id=conv_id,
+                filename=filename,
+                mime_type=mime_type,
+                data_bytes=raw_bytes,
+            )
+            att_dict = {
+                "id": att.id,
+                "conversation_id": att.conversation_id,
+                "filename": att.filename,
+                "mime_type": att.mime_type,
+                "size_bytes": att.size_bytes,
+                "created_at": att.created_at,
+            }
+            # Spec 6.3: attachment_ready event
+            ready_event = create_server_event(
+                event_type="attachment_ready",
+                session_id=session.session_id,
+                conversation_id=conv_id,
+                payload={"attachment": att_dict},
+            )
+            await session.send_event(ready_event)
+
+            # Command result
+            res_event = create_server_event(
+                event_type="command_result",
+                session_id=session.session_id,
+                conversation_id=conv_id,
+                payload={
+                    "request_id": cmd.request_id,
+                    "success": True,
+                    "attachment": att_dict,
+                },
+            )
+            await session.send_event(res_event)
+        except Exception as e:
+            err = create_protocol_error(
+                session_id=session.session_id,
+                error_code=ProtocolErrorCode.ATTACHMENT_TOO_LARGE if "exceeds" in str(e).lower() else ProtocolErrorCode.INVALID_MESSAGE,
+                message=str(e),
+                request_id=cmd.request_id,
+            )
+            await session.send_event(err)
+
+    async def _handle_get_artifact(self, session: ClientSession, cmd: ClientCommand) -> None:
+        if not self.artifact_service:
+            err = create_protocol_error(
+                session_id=session.session_id,
+                error_code=ProtocolErrorCode.INTERNAL_ERROR,
+                message="ArtifactService not configured",
+                request_id=cmd.request_id,
+            )
+            await session.send_event(err)
+            return
+
+        artifact_id = cmd.payload.get("artifact_id")
+        if not artifact_id:
+            err = create_protocol_error(
+                session_id=session.session_id,
+                error_code=ProtocolErrorCode.INVALID_MESSAGE,
+                message="Missing artifact_id in payload",
+                request_id=cmd.request_id,
+            )
+            await session.send_event(err)
+            return
+
+        art = await self.artifact_service.get_artifact(artifact_id)
+        if not art:
+            err = create_protocol_error(
+                session_id=session.session_id,
+                error_code=ProtocolErrorCode.INVALID_MESSAGE,
+                message=f"Artifact '{artifact_id}' not found",
+                request_id=cmd.request_id,
+            )
+            await session.send_event(err)
+            return
+
+        content = self.artifact_service.read_artifact_content(art)
+        res_event = create_server_event(
+            event_type="command_result",
+            session_id=session.session_id,
+            conversation_id=cmd.conversation_id,
+            payload={
+                "request_id": cmd.request_id,
+                "success": True,
+                "artifact": {
+                    "id": art.id,
+                    "run_id": art.run_id,
+                    "kind": art.kind.value if hasattr(art.kind, "value") else str(art.kind),
+                    "name": art.name,
+                    "mime_type": art.mime_type,
+                    "path_or_storage_key": art.path_or_storage_key,
+                    "preview_supported": art.preview_supported,
+                    "created_at": art.created_at,
+                    "content": content,
+                },
+            },
+        )
+        await session.send_event(res_event)
 
     async def dispatch(self, session: ClientSession, raw_message: str) -> None:
         """Parses and dispatches a raw client WebSocket message."""

@@ -82,6 +82,8 @@ def create_app(
             approval_service=approval_service,
             settings_service=settings_service,
             diff_service=diff_service,
+            attachment_service=attachment_service,
+            artifact_service=artifact_service,
         )
 
         # Wire event service broadcast to connection manager

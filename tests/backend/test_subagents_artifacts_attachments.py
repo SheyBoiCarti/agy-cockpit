@@ -452,3 +452,113 @@ def test_unified_antigravity_adapter_selection():
             adapter = UnifiedAntigravityAdapter()
             assert adapter._should_use_cli() is True
 
+
+def test_ws_upload_attachment_and_get_artifact(phase7_setup):
+    """Verifies that upload_attachment and get_artifact work over WebSocket protocol."""
+    import base64
+    from agy_cockpit.backend.domain.enums import ArtifactKind
+    from agy_cockpit.backend.services.artifact_service import ArtifactService
+
+    cfg, ws_dir = phase7_setup
+    app = create_app(config=cfg, agent_adapter=MockAntigravityAdapter())
+
+    with TestClient(app) as client:
+        # Pre-create artifact in database before connecting websocket
+        art_id = None
+        loop = asyncio.new_event_loop()
+        try:
+            from agy_cockpit.backend.db.connection import get_db_connection
+            from agy_cockpit.backend.db.repositories.workspace_repository import WorkspaceRepository
+            from agy_cockpit.backend.db.repositories.conversation_repository import ConversationRepository
+            from agy_cockpit.backend.db.repositories.message_repository import MessageRepository
+            from agy_cockpit.backend.db.repositories.run_repository import RunRepository
+            from agy_cockpit.backend.domain.models import Workspace, Conversation, Message, Run
+            from agy_cockpit.backend.domain.enums import RunState, MessageRole
+
+            async def _create_art():
+                conn = await get_db_connection(cfg.db_path)
+                ws = Workspace(canonical_path=ws_dir, display_name="art_ws")
+                await WorkspaceRepository(conn).create(ws)
+                conv = Conversation(workspace_id=ws.id, title="Art Conv")
+                await ConversationRepository(conn).create(conv)
+                user_msg = Message(conversation_id=conv.id, role=MessageRole.USER, content="Generate report")
+                await MessageRepository(conn).create(user_msg)
+                run = Run(conversation_id=conv.id, user_message_id=user_msg.id, state=RunState.COMPLETED, started_at="2026-01-01T00:00:00Z")
+                await RunRepository(conn).create(run)
+
+                art_file = os.path.join(ws_dir, "report.md")
+                with open(art_file, "w") as f:
+                    f.write("# Final Report\nAll good.")
+                svc = ArtifactService(conn)
+                art = await svc.register_artifact(
+                    run_id=run.id,
+                    name="report.md",
+                    path_or_storage_key=art_file,
+                    kind=ArtifactKind.REPORT,
+                    mime_type="text/markdown",
+                )
+                art_id = art.id
+                await conn.close()
+                return conv.id, art_id
+            conv_id, art_id = loop.run_until_complete(_create_art())
+        finally:
+            loop.close()
+
+        with client.websocket_connect(
+            f"/ws?token={cfg.token}",
+            headers={"Origin": "http://127.0.0.1:8080"},
+        ) as ws:
+            # 0. Handshake
+            ws.send_text(json.dumps({
+                "protocol_version": PROTOCOL_VERSION,
+                "type": "hello",
+                "request_id": "r0",
+                "session_id": "s1",
+                "payload": {},
+            }))
+            ack = json.loads(ws.receive_text())
+            assert ack["type"] == "hello_ack"
+
+            # 1. Test upload_attachment
+            raw_content = b"key: value\nfoo: bar"
+            b64_content = base64.b64encode(raw_content).decode("ascii")
+
+            ws.send_text(json.dumps({
+                "protocol_version": PROTOCOL_VERSION,
+                "type": "upload_attachment",
+                "request_id": "r_up",
+                "session_id": "s1",
+                "conversation_id": conv_id,
+                "payload": {
+                    "filename": "test.yaml",
+                    "mime_type": "application/x-yaml",
+                    "data_base64": b64_content,
+                },
+            }))
+
+            evt1 = json.loads(ws.receive_text())
+            evt2 = json.loads(ws.receive_text())
+
+            events = [evt1, evt2]
+            types = [e["type"] for e in events]
+            assert "attachment_ready" in types
+            assert "command_result" in types
+
+            # 2. Test get_artifact
+            ws.send_text(json.dumps({
+                "protocol_version": PROTOCOL_VERSION,
+                "type": "get_artifact",
+                "request_id": "r_art",
+                "session_id": "s1",
+                "payload": {
+                    "artifact_id": art_id,
+                },
+            }))
+
+            art_res = json.loads(ws.receive_text())
+            assert art_res["type"] == "command_result"
+            assert art_res["payload"]["success"] is True
+            assert art_res["payload"]["artifact"]["id"] == art_id
+            assert "# Final Report" in art_res["payload"]["artifact"]["content"]
+
+

@@ -101,5 +101,42 @@ class AttachmentService:
         await self.repo.create(att)
         return att
 
+    async def save_attachment_bytes(
+        self,
+        conversation_id: str,
+        filename: str,
+        mime_type: str,
+        data_bytes: bytes,
+    ) -> Attachment:
+        if mime_type not in self.allowed_mimes:
+            raise AttachmentTypeNotAllowedError(
+                f"MIME type '{mime_type}' is not supported. Allowed: {', '.join(sorted(self.allowed_mimes))}"
+            )
+        if len(data_bytes) > self.max_bytes:
+            raise AttachmentTooLargeError(
+                f"Attachment exceeds maximum allowed size of {self.max_bytes} bytes."
+            )
+
+        storage_filename = f"{uuid.uuid4().hex}"
+        storage_path = os.path.join(self.storage_dir, storage_filename)
+        with open(storage_path, "wb") as f:
+            f.write(data_bytes)
+
+        hasher = hashlib.sha256(data_bytes)
+        orig_filename = os.path.basename(filename or "attachment")
+        att = Attachment(
+            conversation_id=conversation_id,
+            filename=orig_filename,
+            mime_type=mime_type,
+            size_bytes=len(data_bytes),
+            sha256=hasher.hexdigest(),
+            storage_path=storage_path,
+            created_at=utc_now_iso(),
+        )
+
+        await self.repo.create(att)
+        return att
+
     async def get_attachment(self, attachment_id: str) -> Optional[Attachment]:
         return await self.repo.get_by_id(attachment_id)
+
