@@ -47,6 +47,9 @@ class ClientSession:
         self.active_run_id: Optional[str] = None
         self.writer_task: Optional[asyncio.Task] = None
         self.is_closed = False
+        self.is_replaying = False
+        self.replay_buffer: List[ServerEvent] = []
+        self._replay_lock = asyncio.Lock()
 
     def start_writer(self) -> None:
         self.writer_task = asyncio.create_task(self._writer_loop())
@@ -91,6 +94,25 @@ class ClientSession:
                     logger.error("Outbound queue full for session %s; closing slow connection", self.session_id)
                     await self.close(code=status.WS_1008_POLICY_VIOLATION)
                     return False
+
+    async def enqueue_or_buffer(self, event: ServerEvent) -> bool:
+        """Sends event directly or buffers it if a replay is actively in progress for this run."""
+        async with self._replay_lock:
+            if self.is_replaying and event.run_id and event.run_id == self.active_run_id:
+                self.replay_buffer.append(event)
+                return True
+            return await self.send_event(event)
+
+    async def flush_replay_buffer(self, min_sequence: int = 0) -> None:
+        """Drains buffered live events whose sequence > min_sequence in order."""
+        async with self._replay_lock:
+            # Sort buffer by sequence
+            self.replay_buffer.sort(key=lambda e: e.sequence or 0)
+            for event in self.replay_buffer:
+                if event.sequence is None or event.sequence > min_sequence:
+                    await self.send_event(event)
+            self.replay_buffer.clear()
+            self.is_replaying = False
 
     async def close(self, code: int = status.WS_1000_NORMAL_CLOSURE, reason: str = "") -> None:
         if self.is_closed:
@@ -178,7 +200,7 @@ class ConnectionManager:
                     session.active_conversation_id is None
                     or session.active_conversation_id == event.conversation_id
                 ):
-                    await session.send_event(event)
+                    await session.enqueue_or_buffer(event)
             else:
                 # Global event, deliver to all
-                await session.send_event(event)
+                await session.enqueue_or_buffer(event)

@@ -70,21 +70,30 @@ class ReplayService:
             last_seen_sequence,
         )
 
-        for rec in missed_events:
-            try:
-                payload = json.loads(rec.payload_json)
-            except Exception:
-                payload = {}
-            event = create_server_event(
-                event_type=rec.type,
-                session_id=session.session_id,
-                payload=payload,
-                conversation_id=rec.conversation_id,
-                run_id=rec.run_id,
-                sequence=rec.sequence,
-                event_id=rec.event_id,
-            )
-            await session.send_event(event)
+        session.is_replaying = True
+        session.replay_buffer.clear()
+        max_replayed_seq = last_seen_sequence
+
+        try:
+            for rec in missed_events:
+                try:
+                    payload = json.loads(rec.payload_json)
+                except Exception:
+                    payload = {}
+                event = create_server_event(
+                    event_type=rec.type,
+                    session_id=session.session_id,
+                    payload=payload,
+                    conversation_id=rec.conversation_id,
+                    run_id=rec.run_id,
+                    sequence=rec.sequence,
+                    event_id=rec.event_id,
+                )
+                await session.send_event(event)
+                if rec.sequence:
+                    max_replayed_seq = max(max_replayed_seq, rec.sequence)
+        finally:
+            await session.flush_replay_buffer(min_sequence=max_replayed_seq)
 
     async def build_sync_state_payload(self, run_id: str) -> Optional[Dict[str, Any]]:
         """Constructs canonical sync_state snapshot dictionary for a run."""
