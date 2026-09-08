@@ -45,6 +45,7 @@ interface CockpitState {
   streamingOutput: string;
   activeTools: Record<string, ToolExecution>;
   pendingApproval: ApprovalRequest | null;
+  pendingApprovals: ApprovalRequest[];
   subagents: Record<string, Subagent>;
   artifacts: Record<string, Artifact>;
   changedFiles: Record<string, ChangedFile>;
@@ -80,6 +81,7 @@ interface CockpitState {
   appendToolLog: (toolId: string, chunk: string) => void;
   toolFinished: (toolId: string, success: boolean, summary?: string, sequence?: number) => void;
   setPendingApproval: (approval: ApprovalRequest | null) => void;
+  dequeueApproval: (approvalId?: string) => void;
   fileChanged: (file: ChangedFile) => void;
   subagentUpdated: (subagent: Subagent) => void;
   artifactCreated: (artifact: Artifact) => void;
@@ -120,6 +122,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
   streamingOutput: '',
   activeTools: {},
   pendingApproval: null,
+  pendingApprovals: [],
   subagents: {},
   artifacts: {},
   changedFiles: {},
@@ -196,6 +199,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       streamingOutput: '',
       activeTools: {},
       pendingApproval: null,
+      pendingApprovals: [],
       activeRunId: null,
     });
   },
@@ -257,6 +261,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       streamingOutput: '',
       activeTools: {},
       pendingApproval: null,
+      pendingApprovals: [],
       subagents: {},
       artifacts: {},
       changedFiles: {},
@@ -324,8 +329,35 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       };
     }),
 
-  setPendingApproval: (pendingApproval) =>
-    set({ pendingApproval }),
+  setPendingApproval: (approval) =>
+    set((state) => {
+      if (!approval) {
+        const next = state.pendingApprovals.slice(1);
+        return {
+          pendingApprovals: next,
+          pendingApproval: next[0] || null,
+        };
+      }
+      const existing = state.pendingApprovals.some((a) => a.id === approval.id);
+      const next = existing
+        ? state.pendingApprovals.map((a) => (a.id === approval.id ? approval : a))
+        : [...state.pendingApprovals, approval];
+      return {
+        pendingApprovals: next,
+        pendingApproval: next[0] || null,
+      };
+    }),
+
+  dequeueApproval: (approvalId) =>
+    set((state) => {
+      const next = approvalId
+        ? state.pendingApprovals.filter((a) => a.id !== approvalId)
+        : state.pendingApprovals.slice(1);
+      return {
+        pendingApprovals: next,
+        pendingApproval: next[0] || null,
+      };
+    }),
 
   fileChanged: (file) =>
     set((state) => ({
@@ -406,6 +438,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         runs: { ...state.runs, [runId]: updatedRun },
         activeRunId: null,
         pendingApproval: null,
+        pendingApprovals: [],
         messages: updatedMessages,
         conversationMessageIds: updatedConvMsgIds,
       };
@@ -456,6 +489,16 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         };
       }
 
+      const syncApproval = payload.pending_approval
+        ? {
+            id: payload.pending_approval.id,
+            run_id: payload.run_id,
+            sdk_tool_name: payload.pending_approval.sdk_tool_name,
+            args: payload.pending_approval.args,
+            reason: payload.pending_approval.reason,
+          }
+        : null;
+
       return {
         activeRunId: payload.run_id,
         reasoning: payload.reasoning || '',
@@ -464,15 +507,8 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         changedFiles: filesMap,
         subagents: subagentsMap,
         artifacts: artifactsMap,
-        pendingApproval: payload.pending_approval
-          ? {
-              id: payload.pending_approval.id,
-              run_id: payload.run_id,
-              sdk_tool_name: payload.pending_approval.sdk_tool_name,
-              args: payload.pending_approval.args,
-              reason: payload.pending_approval.reason,
-            }
-          : null,
+        pendingApproval: syncApproval,
+        pendingApprovals: syncApproval ? [syncApproval] : [],
         lastSequence: Math.max(state.lastSequence, payload.last_sequence || 0),
       };
     }),

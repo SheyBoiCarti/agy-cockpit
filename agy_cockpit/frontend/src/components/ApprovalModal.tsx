@@ -1,16 +1,18 @@
 import React from 'react';
 import { useCockpitStore } from '../store/useCockpitStore';
 import { wsService } from '../services/websocket';
-import { ShieldAlert, Check, X, Terminal, FileEdit } from 'lucide-react';
+import { ShieldAlert, Check, X, Terminal, FileEdit, AlertCircle } from 'lucide-react';
 
 export const ApprovalModal: React.FC = () => {
   const pendingApproval = useCockpitStore((s) => s.pendingApproval);
+  const pendingApprovals = useCockpitStore((s) => s.pendingApprovals);
+  const policyPreset = useCockpitStore((s) => s.settings.policy_preset);
 
   if (!pendingApproval) return null;
 
   const handleDecision = (decision: 'approved' | 'rejected') => {
     wsService.respondApproval(pendingApproval.id, decision);
-    useCockpitStore.getState().setPendingApproval(null);
+    useCockpitStore.getState().dequeueApproval(pendingApproval.id);
   };
 
   const isCommand = pendingApproval.sdk_tool_name === 'run_command';
@@ -18,23 +20,50 @@ export const ApprovalModal: React.FC = () => {
     pendingApproval.sdk_tool_name === 'create_file' ||
     pendingApproval.sdk_tool_name === 'edit_file';
 
+  const queueCount = pendingApprovals ? pendingApprovals.length : 1;
+
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-xs flex items-center justify-center z-50 p-4">
       <div className="bg-neutral-900 border border-amber-500/40 rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-4">
         {/* Header */}
-        <div className="flex items-center space-x-3 text-amber-400">
-          <div className="p-2 bg-amber-500/20 rounded-xl border border-amber-500/30">
-            <ShieldAlert className="w-6 h-6" />
+        <div className="flex items-start justify-between">
+          <div className="flex items-center space-x-3 text-amber-400">
+            <div className="p-2 bg-amber-500/20 rounded-xl border border-amber-500/30">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <h3 className="text-base font-semibold text-neutral-100">
+                  Action Requires Approval
+                </h3>
+                {queueCount > 1 && (
+                  <span className="px-2 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-300 font-mono border border-amber-500/30">
+                    {queueCount} pending
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-neutral-400">
+                Antigravity is requesting permission to execute an external tool.
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="text-base font-semibold text-neutral-100">
-              Action Requires Approval
-            </h3>
-            <p className="text-xs text-neutral-400">
-              Antigravity is requesting permission to execute an external tool.
-            </p>
-          </div>
+          {policyPreset && (
+            <span className="px-2.5 py-1 text-xs rounded-lg bg-neutral-800 text-neutral-300 border border-neutral-700 font-mono shrink-0">
+              policy: {policyPreset}
+            </span>
+          )}
         </div>
+
+        {/* Reason / Policy Context */}
+        {pendingApproval.reason && (
+          <div className="flex items-start space-x-2 bg-amber-950/30 border border-amber-500/20 rounded-xl p-3 text-xs text-amber-200/90 leading-relaxed">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-semibold text-amber-300">Reason: </span>
+              <span>{pendingApproval.reason}</span>
+            </div>
+          </div>
+        )}
 
         {/* Tool Details */}
         <div className="bg-neutral-950 rounded-xl border border-neutral-800 p-4 space-y-2">

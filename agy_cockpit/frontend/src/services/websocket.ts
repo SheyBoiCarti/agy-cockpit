@@ -230,7 +230,7 @@ class WebSocketService {
         break;
 
       case 'approval_resolved':
-        store.setPendingApproval(null);
+        store.dequeueApproval(event.payload.approval_request_id);
         break;
 
       case 'file_changed':
