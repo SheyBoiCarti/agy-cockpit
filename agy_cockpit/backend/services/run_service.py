@@ -168,8 +168,8 @@ class RunService:
         if attachment_ids:
             for att_id in attachment_ids:
                 att = await self.attachment_repo.get_by_id(att_id)
-                if att and att.file_path and os.path.exists(att.file_path):
-                    attachment_paths.append(att.file_path)
+                if att and att.storage_path and os.path.exists(att.storage_path):
+                    attachment_paths.append(att.storage_path)
 
         cancel_token = asyncio.Event()
         task = asyncio.create_task(

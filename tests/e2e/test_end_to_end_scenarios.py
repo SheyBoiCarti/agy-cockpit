@@ -310,6 +310,16 @@ def test_scenario_9_attachment_multimodal_flow(e2e_environment):
             start_evt = json.loads(ws.receive_text())
             assert start_evt["type"] == "run_started"
 
+            received_types = [start_evt["type"]]
+            while True:
+                evt = json.loads(ws.receive_text())
+                received_types.append(evt["type"])
+                if evt["type"] in ("run_completed", "run_failed", "protocol_error"):
+                    break
+
+            assert "run_completed" in received_types
+            assert "protocol_error" not in received_types
+
 
 def test_scenario_10_disconnect_reconnect_mid_run(e2e_environment):
     """Scenario 10: Disconnect mid-run, reconnect with session_id, and resume stream."""
