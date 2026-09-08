@@ -38,6 +38,7 @@ export const RightDrawer: React.FC = () => {
   const [previewArtifact, setPreviewArtifact] = useState<Artifact | null>(null);
   const [artifactContent, setArtifactContent] = useState<string | null>(null);
   const [isLoadingArtifact, setIsLoadingArtifact] = useState(false);
+  const [htmlViewMode, setHtmlViewMode] = useState<'preview' | 'source'>('preview');
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
   // Default to first tool with logs if not selected
@@ -310,13 +311,41 @@ export const RightDrawer: React.FC = () => {
                       {previewArtifact.kind}
                     </span>
                   </div>
-                  <button
-                    onClick={() => setPreviewArtifact(null)}
-                    className="p-1 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 rounded transition-colors"
-                    title="Close preview"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    {(previewArtifact.mime_type === 'text/html' ||
+                      previewArtifact.name.endsWith('.html') ||
+                      previewArtifact.name.endsWith('.htm')) && (
+                      <div className="flex rounded bg-neutral-800 p-0.5 text-[11px]">
+                        <button
+                          onClick={() => setHtmlViewMode('preview')}
+                          className={`px-2 py-0.5 rounded transition-colors ${
+                            htmlViewMode === 'preview'
+                              ? 'bg-indigo-600 text-white'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          Preview
+                        </button>
+                        <button
+                          onClick={() => setHtmlViewMode('source')}
+                          className={`px-2 py-0.5 rounded transition-colors ${
+                            htmlViewMode === 'source'
+                              ? 'bg-indigo-600 text-white'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          Source
+                        </button>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => setPreviewArtifact(null)}
+                      className="p-1 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 rounded transition-colors"
+                      title="Close preview"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Preview Body */}
@@ -337,6 +366,23 @@ export const RightDrawer: React.FC = () => {
                   ) : artifactContent !== null ? (
                     previewArtifact.mime_type === 'text/markdown' || previewArtifact.name.endsWith('.md') ? (
                       <MarkdownView content={artifactContent} />
+                    ) : (previewArtifact.mime_type === 'text/html' ||
+                        previewArtifact.name.endsWith('.html') ||
+                        previewArtifact.name.endsWith('.htm')) ? (
+                      htmlViewMode === 'preview' ? (
+                        <div className="w-full h-full min-h-[500px] rounded border border-neutral-800 bg-white overflow-hidden shadow">
+                          <iframe
+                            sandbox="allow-scripts"
+                            srcDoc={artifactContent}
+                            className="w-full h-full min-h-[500px] border-0"
+                            title={previewArtifact.name}
+                          />
+                        </div>
+                      ) : (
+                        <pre className="p-3 rounded bg-neutral-900 border border-neutral-800 font-mono text-neutral-300 text-xs overflow-x-auto whitespace-pre-wrap">
+                          {artifactContent}
+                        </pre>
+                      )
                     ) : (
                       <pre className="p-3 rounded bg-neutral-900 border border-neutral-800 font-mono text-neutral-300 text-xs overflow-x-auto whitespace-pre-wrap">
                         {artifactContent}
