@@ -308,7 +308,10 @@ class WebSocketService {
       case 'workspace_search_results':
         store.setMentionSearch(
           store.mentionQuery,
-          event.payload.results || [],
+          (event.payload.results || []).map((r: any) => ({
+            path: r.path,
+            is_directory: r.is_directory ?? (r.type === 'directory'),
+          })),
           false
         );
         break;

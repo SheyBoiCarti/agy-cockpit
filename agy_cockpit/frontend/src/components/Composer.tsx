@@ -127,8 +127,8 @@ export const Composer: React.FC = () => {
             ...prev,
             {
               id: data.attachment.id,
-              name: data.attachment.file_name,
-              size: data.attachment.byte_size,
+              name: data.attachment.filename || data.attachment.file_name,
+              size: data.attachment.size_bytes ?? data.attachment.byte_size ?? 0,
             },
           ]);
         }
