@@ -390,3 +390,50 @@ def test_tool_log_streaming_chunks(phase6_setup):
             assert len(logs_received) == 3
             assert "vite building..." in logs_received[0]
             assert "built in 120ms" in logs_received[2]
+
+
+@pytest.mark.asyncio
+async def test_cli_adapter_tool_rejection_halts_process(tmp_path):
+    """Verifies that rejecting a tool in CLISubscriptionAdapter sets cancellation and aborts immediately."""
+    from agy_cockpit.backend.services.agent_service import CLISubscriptionAdapter
+    from agy_cockpit.backend.domain.enums import RunState
+    import tempfile
+    import stat
+
+    # Create a mock agy script that emits a tool ACTIVE step
+    mock_agy = tmp_path / "mock_agy.sh"
+    mock_agy.write_text(
+        "#!/bin/bash\n"
+        "echo '{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"tool\",\"tool_name\":\"run_command\",\"state\":\"ACTIVE\",\"tool_info\":{\"parameters\":{\"command\":\"echo dangerous\"}}}}'\n"
+        "sleep 5\n"
+    )
+    mock_agy.chmod(mock_agy.stat().st_mode | stat.S_IEXEC)
+
+    adapter = CLISubscriptionAdapter(agy_binary_path=str(mock_agy))
+    cancel_token = asyncio.Event()
+
+    async def reject_handler(tc):
+        return False
+
+    async def noop(*args, **kwargs):
+        pass
+
+    result = await adapter.run_turn(
+        conversation_id="c1",
+        save_dir=str(tmp_path),
+        workspace_path=str(tmp_path),
+        prompt="run something",
+        model_slug="gemini-2.5-pro",
+        policy_preset="ask-destructive",
+        approval_handler=reject_handler,
+        on_thought=noop,
+        on_token=noop,
+        on_tool_start=noop,
+        on_tool_finish=noop,
+        cancellation_token=cancel_token,
+    )
+
+    assert result.state == RunState.CANCELLED
+    assert cancel_token.is_set()
+    assert "rejected" in result.final_text.lower()
+

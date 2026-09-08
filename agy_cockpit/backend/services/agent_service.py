@@ -387,16 +387,35 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                             if state == "ACTIVE":
                                 active_tools[tool_id] = tool_name
                                 params = tool_info.get("parameters", {})
-                                if policy_preset != "always-proceed" and tool_name in (
-                                    "run_command", "write_to_file", "replace_file_content", "create_file", "edit_file"
-                                ):
+                                should_ask = False
+                                if policy_preset in ("always-prompt", "strict"):
+                                    should_ask = True
+                                elif policy_preset in ("ask-destructive", "request-review") or policy_preset != "always-proceed":
+                                    should_ask = tool_name in (
+                                        "run_command", "write_to_file", "replace_file_content", "create_file", "edit_file"
+                                    )
+
+                                if should_ask:
                                     tc = agy.types.ToolCall(id=tool_id, name=tool_name, args=params)
                                     approved = await approval_handler(tc)
                                     if not approved:
                                         await on_tool_start(tool_id, tool_name, params)
                                         await on_tool_finish(tool_id, tool_name, False, "User rejected execution")
                                         active_tools.pop(tool_id, None)
-                                        continue
+                                        cancellation_token.set()
+                                        if proc and proc.returncode is None:
+                                            try:
+                                                proc.terminate()
+                                                await asyncio.sleep(0.1)
+                                                if proc.returncode is None:
+                                                    proc.kill()
+                                            except Exception:
+                                                pass
+                                        return TurnResult(
+                                            final_text="Execution halted: Tool call rejected by user.",
+                                            reasoning_text="".join(accumulated_thoughts),
+                                            state=RunState.CANCELLED,
+                                        )
                                 await on_tool_start(tool_id, tool_name, params)
 
                             elif state in ("DONE", "ERROR"):
@@ -479,6 +498,11 @@ class UnifiedAntigravityAdapter(AntigravityAdapter):
         self.sdk_adapter = sdk_adapter or RealSDKAntigravityAdapter()
 
     def _should_use_cli(self) -> bool:
+        adapter_mode = os.environ.get("AGY_COCKPIT_ADAPTER", "").lower()
+        if adapter_mode == "sdk":
+            return False
+        if adapter_mode == "cli":
+            return True
         has_agy = bool(shutil.which("agy"))
         has_api_key = bool(os.environ.get("GEMINI_API_KEY"))
         has_oauth = os.path.exists(os.path.expanduser("~/.gemini/antigravity-cli/antigravity-oauth-token"))
