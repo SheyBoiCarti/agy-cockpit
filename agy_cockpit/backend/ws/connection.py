@@ -151,7 +151,9 @@ class ConnectionManager:
                     parsed.scheme in ("http", "https")
                     and parsed.hostname in ("127.0.0.1", "localhost", "::1")
                 )
-                if not is_loopback:
+                host_header = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host")
+                is_same_host = bool(host_header and parsed.netloc == host_header)
+                if not is_loopback and not is_same_host:
                     logger.warning("Rejected connection from untrusted origin: %s", origin)
                     raise ConnectionSecurityError(
                         ProtocolErrorCode.ORIGIN_REJECTED,

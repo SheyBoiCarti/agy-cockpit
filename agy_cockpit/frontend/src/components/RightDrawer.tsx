@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useCockpitStore } from '../store/useCockpitStore';
 import { wsService } from '../services/websocket';
 import { DiffEditor } from '@monaco-editor/react';
@@ -29,12 +29,16 @@ export const RightDrawer: React.FC = () => {
   const activeDrawerTab = useCockpitStore((s) => s.activeDrawerTab);
   const setActiveDrawerTab = useCockpitStore((s) => s.setActiveDrawerTab);
 
-  const changedFiles = useCockpitStore((s) => Object.values(s.changedFiles));
+  const changedFilesMap = useCockpitStore((s) => s.changedFiles);
   const selectedDiffFile = useCockpitStore((s) => s.selectedDiffFile);
   const diffData = useCockpitStore((s) => s.diffData);
   const toolLogs = useCockpitStore((s) => s.toolLogs);
-  const subagents = useCockpitStore((s) => Object.values(s.subagents));
-  const artifacts = useCockpitStore((s) => Object.values(s.artifacts));
+  const subagentsMap = useCockpitStore((s) => s.subagents);
+  const artifactsMap = useCockpitStore((s) => s.artifacts);
+
+  const changedFiles = useMemo(() => Object.values(changedFilesMap), [changedFilesMap]);
+  const subagents = useMemo(() => Object.values(subagentsMap), [subagentsMap]);
+  const artifacts = useMemo(() => Object.values(artifactsMap), [artifactsMap]);
 
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [previewArtifact, setPreviewArtifact] = useState<Artifact | null>(null);

@@ -111,7 +111,7 @@ class WebSocketService {
     const store = useCockpitStore.getState();
 
     // Monotonic sequence check for replayable events per run
-    if (event.sequence !== undefined) {
+    if (typeof event.sequence === 'number') {
       const runKey = event.run_id || 'global';
       let seqSet = this.processedSequencesByRun.get(runKey);
       if (!seqSet) {
@@ -351,9 +351,13 @@ class WebSocketService {
     useCockpitStore.getState().setConnectionState('error', 'WebSocket connection error');
   }
 
-  private handleClose() {
+  private handleClose(event?: CloseEvent) {
     if (this.pingInterval) clearInterval(this.pingInterval);
     const store = useCockpitStore.getState();
+    if (event && event.code === 1008) {
+      store.setConnectionState('error', event.reason || 'Unauthorized or Origin rejected');
+      return;
+    }
     store.setConnectionState('disconnected');
     this.scheduleReconnect();
   }

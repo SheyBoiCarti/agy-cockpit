@@ -23,6 +23,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
   const conversationsMap = useCockpitStore((s) => s.conversations);
   const activeConversationId = useCockpitStore((s) => s.activeConversationId);
   const connectionState = useCockpitStore((s) => s.connectionState);
+  const connectionError = useCockpitStore((s) => s.connectionError);
 
   const [isOpenWorkspaceModal, setIsOpenWorkspaceModal] = useState(false);
   const [newWorkspacePath, setNewWorkspacePath] = useState('');
@@ -146,7 +147,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
 
       {/* Footer Connection & Settings */}
       <div className="p-3 border-t border-neutral-800 bg-neutral-900/30 flex items-center justify-between text-xs">
-        <div className="flex items-center space-x-2">
+        <div
+          onClick={connectionState === 'error' || connectionState === 'disconnected' ? onOpenSettings : undefined}
+          className={`flex items-center space-x-2 ${
+            connectionState === 'error' || connectionState === 'disconnected' ? 'cursor-pointer group' : ''
+          }`}
+          title={connectionError || (connectionState !== 'connected' ? 'Click to configure token in settings' : 'Connected')}
+        >
           <Circle
             className={`w-2.5 h-2.5 fill-current ${
               connectionState === 'connected'
@@ -156,8 +163,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
                 : 'text-rose-400'
             }`}
           />
-          <span className="text-neutral-400 capitalize text-[11px]">
-            {connectionState}
+          <span className={`text-[11px] capitalize ${
+            connectionState === 'error' ? 'text-rose-400 group-hover:underline' : 'text-neutral-400'
+          }`}>
+            {connectionState === 'error' && connectionError ? 'Auth Error' : connectionState}
           </span>
         </div>
 

@@ -25,9 +25,13 @@ export const Header: React.FC = () => {
   const activeDrawerTab = useCockpitStore((s) => s.activeDrawerTab);
   const setActiveDrawerTab = useCockpitStore((s) => s.setActiveDrawerTab);
 
-  const changedFilesCount = useCockpitStore((s) => Object.keys(s.changedFiles).length);
-  const subagentsCount = useCockpitStore((s) => Object.keys(s.subagents).length);
-  const artifactsCount = useCockpitStore((s) => Object.keys(s.artifacts).length);
+  const changedFiles = useCockpitStore((s) => s.changedFiles);
+  const subagents = useCockpitStore((s) => s.subagents);
+  const artifacts = useCockpitStore((s) => s.artifacts);
+
+  const changedFilesCount = Object.keys(changedFiles).length;
+  const subagentsCount = Object.keys(subagents).length;
+  const artifactsCount = Object.keys(artifacts).length;
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (typeof window !== 'undefined' && (localStorage.getItem('agy_theme') as 'dark' | 'light')) || 'dark';

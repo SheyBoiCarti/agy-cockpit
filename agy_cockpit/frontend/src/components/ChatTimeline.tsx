@@ -6,6 +6,8 @@ import { ToolCard } from './ToolCard';
 import { ReasoningAccordion } from './ReasoningAccordion';
 import { Bot, User, AlertCircle, CheckCircle2, Clock, Ban } from 'lucide-react';
 
+const EMPTY_MESSAGE_IDS: string[] = [];
+
 export const ChatTimeline: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -13,9 +15,8 @@ export const ChatTimeline: React.FC = () => {
   const conversation = useCockpitStore((s) =>
     s.activeConversationId ? s.conversations[s.activeConversationId] : null
   );
-  const messageIds = useCockpitStore((s) =>
-    s.activeConversationId ? s.conversationMessageIds[s.activeConversationId] || [] : []
-  );
+  const conversationMessageIds = useCockpitStore((s) => s.conversationMessageIds);
+  const messageIds = (activeConversationId && conversationMessageIds[activeConversationId]) || EMPTY_MESSAGE_IDS;
   const messagesMap = useCockpitStore((s) => s.messages);
 
   const activeRunId = useCockpitStore((s) => s.activeRunId);
