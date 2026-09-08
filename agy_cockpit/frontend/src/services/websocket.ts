@@ -9,7 +9,7 @@ class WebSocketService {
   private reconnectAttempts = 0;
   private maxReconnectDelay = 10000;
   private pingInterval: any = null;
-  private processedSequences = new Set<number>();
+  private processedSequencesByRun = new Map<string, Set<number>>();
 
   constructor() {
     // Generate or load session ID
@@ -109,13 +109,19 @@ class WebSocketService {
   private routeEvent(event: ServerEvent<any>) {
     const store = useCockpitStore.getState();
 
-    // Monotonic sequence check for replayable events
+    // Monotonic sequence check for replayable events per run
     if (event.sequence !== undefined) {
-      if (this.processedSequences.has(event.sequence)) {
+      const runKey = event.run_id || 'global';
+      let seqSet = this.processedSequencesByRun.get(runKey);
+      if (!seqSet) {
+        seqSet = new Set<number>();
+        this.processedSequencesByRun.set(runKey, seqSet);
+      }
+      if (seqSet.has(event.sequence)) {
         // Drop duplicate replay
         return;
       }
-      this.processedSequences.add(event.sequence);
+      seqSet.add(event.sequence);
       store.setLastSequence(event.sequence);
     }
 

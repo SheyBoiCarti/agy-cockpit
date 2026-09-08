@@ -11,7 +11,11 @@ from fastapi.staticfiles import StaticFiles
 
 from agy_cockpit.backend.config import AppConfig, get_config
 from agy_cockpit.backend.db.connection import get_db_connection, init_db
-from agy_cockpit.backend.services.agent_service import AntigravityAdapter, RealSDKAntigravityAdapter
+from agy_cockpit.backend.services.agent_service import (
+    AntigravityAdapter,
+    RealSDKAntigravityAdapter,
+    UnifiedAntigravityAdapter,
+)
 from agy_cockpit.backend.services.approval_service import ApprovalService
 from agy_cockpit.backend.services.artifact_service import ArtifactService
 from agy_cockpit.backend.services.attachment_service import AttachmentService
@@ -60,7 +64,7 @@ def create_app(
             max_bytes=app_config.max_attachment_bytes,
         )
 
-        adapter = agent_adapter or RealSDKAntigravityAdapter()
+        adapter = agent_adapter or UnifiedAntigravityAdapter()
         run_service = RunService(
             conn=db_conn,
             event_service=event_service,
@@ -159,7 +163,16 @@ def create_app(
         art = await app.state.artifact_service.get_artifact(artifact_id)
         if not art:
             raise HTTPException(status_code=404, detail="Artifact not found")
-        content = app.state.artifact_service.read_artifact_content(art)
+
+        workspaces = await app.state.workspace_service.list_workspaces()
+        allowed_dirs = [ws.canonical_path for ws in workspaces]
+        allowed_dirs.append(app_config.data_dir)
+
+        try:
+            content = app.state.artifact_service.read_artifact_content(art, allowed_dirs=allowed_dirs)
+        except PermissionError as pe:
+            raise HTTPException(status_code=403, detail=str(pe))
+
         headers = {
             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
             "X-Content-Type-Options": "nosniff",

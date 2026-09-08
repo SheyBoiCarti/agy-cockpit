@@ -69,3 +69,15 @@ class SubagentRepository:
             (state.value, current_activity, finished_at, node_id),
         )
         await self.conn.commit()
+
+    async def upsert(self, node: SubagentNode) -> SubagentNode:
+        existing = await self.get_by_id(node.id)
+        if existing:
+            await self.update_state(
+                node_id=node.id,
+                state=node.state if isinstance(node.state, SubagentState) else SubagentState(node.state),
+                current_activity=node.current_activity,
+                finished_at=node.finished_at,
+            )
+            return node
+        return await self.create(node)

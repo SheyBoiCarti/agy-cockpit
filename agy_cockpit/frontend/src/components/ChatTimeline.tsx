@@ -1,4 +1,5 @@
 import React, { useRef, useEffect } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCockpitStore } from '../store/useCockpitStore';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
@@ -25,6 +26,15 @@ export const ChatTimeline: React.FC = () => {
 
   const isStreaming = Boolean(activeRunId);
 
+  const messages = messageIds.map((id) => messagesMap[id]).filter(Boolean);
+
+  const rowVirtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 100,
+    overscan: 5,
+  });
+
   // Auto-scroll to bottom when streaming tokens or messages arrive
   useEffect(() => {
     if (scrollRef.current) {
@@ -44,10 +54,8 @@ export const ChatTimeline: React.FC = () => {
     );
   }
 
-  const messages = messageIds.map((id) => messagesMap[id]).filter(Boolean);
-
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
       {messages.length === 0 && !activeRunId && (
         <div className="flex flex-col items-center justify-center h-full text-center text-neutral-500 py-16">
           <Bot className="w-10 h-10 mb-2 text-indigo-400/70" />
@@ -60,45 +68,90 @@ export const ChatTimeline: React.FC = () => {
         </div>
       )}
 
-      {/* Historical Messages */}
-      {messages.map((msg) => (
+      {/* Virtualized Historical Messages */}
+      {messages.length > 0 && (
         <div
-          key={msg.id}
-          className={`flex gap-3 max-w-4xl mx-auto ${
-            msg.role === 'user' ? 'justify-end' : 'justify-start'
-          }`}
+          style={{
+            height: `${rowVirtualizer.getTotalSize()}px`,
+            width: '100%',
+            position: 'relative',
+          }}
         >
-          {msg.role !== 'user' && (
-            <div className="w-8 h-8 rounded-full bg-indigo-950 border border-indigo-700/50 flex items-center justify-center text-indigo-300 shrink-0">
-              <Bot className="w-4 h-4" />
-            </div>
-          )}
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const msg = messages[virtualRow.index];
+            if (!msg) return null;
+            return (
+              <div
+                key={virtualRow.key}
+                data-index={virtualRow.index}
+                ref={rowVirtualizer.measureElement}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+                className="pb-4"
+              >
+                <div
+                  className={`flex gap-3 max-w-4xl mx-auto ${
+                    msg.role === 'user' ? 'justify-end' : 'justify-start'
+                  }`}
+                >
+                  {msg.role !== 'user' && (
+                    <div className="w-8 h-8 rounded-full bg-indigo-950 border border-indigo-700/50 flex items-center justify-center text-indigo-300 shrink-0">
+                      <Bot className="w-4 h-4" />
+                    </div>
+                  )}
 
-          <div
-            className={`rounded-2xl px-4 py-3 text-sm leading-relaxed max-w-[85%] ${
-              msg.role === 'user'
-                ? 'bg-neutral-800 text-neutral-100 rounded-br-sm border border-neutral-700/50 shadow-md'
-                : 'bg-neutral-900/80 text-neutral-200 rounded-bl-sm border border-neutral-800 shadow-md'
-            }`}
-          >
-            {msg.role === 'user' ? (
-              <div className="whitespace-pre-wrap font-sans select-text">{msg.content}</div>
-            ) : (
-              <MarkdownView content={msg.content} />
-            )}
+                  <div
+                    className={`rounded-2xl px-4 py-3 text-sm leading-relaxed max-w-[85%] ${
+                      msg.role === 'user'
+                        ? 'bg-neutral-800 text-neutral-100 rounded-br-sm border border-neutral-700/50 shadow-md'
+                        : 'bg-neutral-900/80 text-neutral-200 rounded-bl-sm border border-neutral-800 shadow-md'
+                    }`}
+                  >
+                    {msg.role === 'user' ? (
+                      <div className="whitespace-pre-wrap font-sans select-text">{msg.content}</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {/* Historical Reasoning Process */}
+                        {msg.reasoning && (
+                          <ReasoningAccordion reasoning={msg.reasoning} isStreaming={false} />
+                        )}
 
-            <div className="mt-1 text-[10px] text-neutral-400 text-right">
-              {new Date(msg.author_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </div>
-          </div>
+                        {/* Historical Tools Invocations */}
+                        {msg.tools && msg.tools.length > 0 && (
+                          <div className="space-y-1">
+                            {msg.tools.map((tool) => (
+                              <ToolCard key={tool.id} tool={tool} />
+                            ))}
+                          </div>
+                        )}
 
-          {msg.role === 'user' && (
-            <div className="w-8 h-8 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-neutral-300 shrink-0">
-              <User className="w-4 h-4" />
-            </div>
-          )}
+                        {msg.content ? (
+                          <MarkdownView content={msg.content} />
+                        ) : null}
+                      </div>
+                    )}
+
+                    <div className="mt-1 text-[10px] text-neutral-400 text-right">
+                      {new Date(msg.author_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  </div>
+
+                  {msg.role === 'user' && (
+                    <div className="w-8 h-8 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-neutral-300 shrink-0">
+                      <User className="w-4 h-4" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
-      ))}
+      )}
 
       {/* Active Streaming Turn */}
       {activeRunId && (

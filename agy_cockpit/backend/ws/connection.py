@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional, Set
+import urllib.parse
 import uuid
 
 from fastapi import WebSocket, WebSocketDisconnect, status
@@ -122,10 +123,11 @@ class ConnectionManager:
             # If origin is provided, must be in allowed_origins or loopback
             allowed = self.config.allowed_origins
             if origin not in allowed:
-                # Check for standard loopback patterns
+                # Check for standard loopback patterns with strict hostname validation
+                parsed = urllib.parse.urlparse(origin)
                 is_loopback = (
-                    origin.startswith("http://127.0.0.1")
-                    or origin.startswith("http://localhost")
+                    parsed.scheme in ("http", "https")
+                    and parsed.hostname in ("127.0.0.1", "localhost", "::1")
                 )
                 if not is_loopback:
                     logger.warning("Rejected connection from untrusted origin: %s", origin)

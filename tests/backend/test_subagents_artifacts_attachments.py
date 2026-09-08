@@ -312,3 +312,143 @@ def test_artifact_registration_and_sandboxed_preview(phase7_setup):
         csp = content_resp.headers.get("content-security-policy", "")
         assert "sandbox" in csp
         assert "default-src 'none'" in csp
+
+
+def test_artifact_path_traversal_forbidden(phase7_setup):
+    """Verifies that an artifact pointing outside allowed dirs is rejected with 403."""
+    cfg, ws_dir = phase7_setup
+    app = create_app(config=cfg, agent_adapter=MockAntigravityAdapter())
+
+    with TestClient(app) as client:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            from agy_cockpit.backend.services.artifact_service import ArtifactService
+            from agy_cockpit.backend.db.repositories.run_repository import RunRepository
+            from agy_cockpit.backend.db.repositories.message_repository import MessageRepository
+            from agy_cockpit.backend.db.repositories.workspace_repository import WorkspaceRepository
+            from agy_cockpit.backend.domain.models import Run, Message, Workspace, Conversation
+            from agy_cockpit.backend.domain.enums import RunState, MessageRole
+            from agy_cockpit.backend.db.connection import get_db_connection
+
+            async def _reg_evil():
+                conn = await get_db_connection(cfg.db_path)
+                ws_repo = WorkspaceRepository(conn)
+                msg_repo = MessageRepository(conn)
+                run_repo = RunRepository(conn)
+
+                from agy_cockpit.backend.db.repositories.conversation_repository import ConversationRepository
+                conv_repo = ConversationRepository(conn)
+                ws = Workspace(canonical_path=ws_dir, display_name="test_ws")
+                await ws_repo.create(ws)
+
+                conv = Conversation(workspace_id=ws.id, title="Test Conv")
+                await conv_repo.create(conv)
+
+                user_msg = Message(
+                    conversation_id=conv.id,
+                    role=MessageRole.USER,
+                    content="Hello",
+                )
+                await msg_repo.create(user_msg)
+
+                real_run = Run(
+                    conversation_id=conv.id,
+                    user_message_id=user_msg.id,
+                    state=RunState.COMPLETED,
+                    started_at="2026-01-01T00:00:00Z",
+                )
+                await run_repo.create(real_run)
+
+                svc = ArtifactService(conn)
+                evil_art = await svc.register_artifact(
+                    run_id=real_run.id,
+                    name="passwd",
+                    path_or_storage_key="/etc/passwd",
+                    kind=ArtifactKind.FILE,
+                    mime_type="text/plain",
+                    preview_supported=True,
+                )
+                await conn.close()
+                return evil_art
+
+            evil_art = loop.run_until_complete(_reg_evil())
+        finally:
+            loop.close()
+
+        # GET content should fail with 403 Forbidden
+        resp = client.get(f"/api/artifacts/{evil_art.id}/content")
+        assert resp.status_code == 403
+        assert "outside allowed directories" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_cli_subscription_adapter_stream_parsing():
+    """Verifies that CLISubscriptionAdapter correctly parses stream-json events from agy CLI."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from agy_cockpit.backend.services.agent_service import CLISubscriptionAdapter
+
+    adapter = CLISubscriptionAdapter(agy_binary_path="/mock/bin/agy")
+
+    ndjson_output = (
+        '{"type":"init","session_id":"cli-conv-1"}\n'
+        '{"type":"step_update","delta":{"thinking":"Planning steps..."}}\n'
+        '{"type":"step_update","delta":{"tool_calls":[{"name":"run_command","args":{"command":"echo hello"},"id":"tc1"}]}}\n'
+        '{"type":"step_update","delta":{"text":"Hello"}}\n'
+        '{"type":"step_update","delta":{"text":" world!"}}\n'
+        '{"type":"result","status":"completed","error_message":null}\n'
+    ).encode("utf-8")
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = asyncio.StreamReader()
+    mock_proc.stdout.feed_data(ndjson_output)
+    mock_proc.stdout.feed_eof()
+    mock_proc.stderr = asyncio.StreamReader()
+    mock_proc.stderr.feed_eof()
+    mock_proc.wait = AsyncMock(return_value=0)
+
+    thoughts = []
+    tokens = []
+    tools_started = []
+
+    async def async_thought(t): thoughts.append(t)
+    async def async_token(t): tokens.append(t)
+    async def async_tool_start(tid, name, args): tools_started.append((tid, name, args))
+    async def noop(*args, **kwargs): return True
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        cancel_token = asyncio.Event()
+        result = await adapter.run_turn(
+            conversation_id="conv-1",
+            save_dir="/tmp",
+            workspace_path="/tmp",
+            prompt="say hello",
+            model_slug="gemini-3.8-flash-high",
+            policy_preset="always-proceed",
+            approval_handler=noop,
+            on_thought=async_thought,
+            on_token=async_token,
+            on_tool_start=async_tool_start,
+            on_tool_finish=noop,
+            cancellation_token=cancel_token,
+        )
+
+    assert result.final_text == "Hello world!"
+    assert "".join(thoughts) == "Planning steps..."
+    assert len(tools_started) == 1
+    assert tools_started[0][1] == "run_command"
+    assert tools_started[0][2] == {"command": "echo hello"}
+    assert result.error_message is None
+
+
+def test_unified_antigravity_adapter_selection():
+    """Verifies that UnifiedAntigravityAdapter selects CLI when available."""
+    import shutil
+    from unittest.mock import patch
+    from agy_cockpit.backend.services.agent_service import UnifiedAntigravityAdapter
+
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("shutil.which", return_value="/mock/bin/agy"):
+            adapter = UnifiedAntigravityAdapter()
+            assert adapter._should_use_cli() is True
+

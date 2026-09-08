@@ -88,6 +88,21 @@ def test_origin_validation(temp_config):
             ) as ws:
                 ws.receive_text()
 
+        # 3. Spoofed subdomain of loopback -> rejected
+        with pytest.raises(Exception):
+            with client.websocket_connect(
+                f"/ws?token={temp_config.token}",
+                headers={"Origin": "http://127.0.0.1.attacker.com:8080"},
+            ) as ws:
+                ws.receive_text()
+
+        with pytest.raises(Exception):
+            with client.websocket_connect(
+                f"/ws?token={temp_config.token}",
+                headers={"Origin": "http://localhost.attacker.com"},
+            ) as ws:
+                ws.receive_text()
+
 
 def test_token_authentication(temp_config):
     app = create_app(temp_config)

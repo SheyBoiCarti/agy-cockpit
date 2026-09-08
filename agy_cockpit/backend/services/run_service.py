@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 import aiosqlite
 
@@ -36,7 +37,11 @@ from agy_cockpit.backend.domain.models import (
     ToolExecution,
     utc_now_iso,
 )
-from agy_cockpit.backend.services.agent_service import AntigravityAdapter, RealSDKAntigravityAdapter
+from agy_cockpit.backend.services.agent_service import (
+    AntigravityAdapter,
+    RealSDKAntigravityAdapter,
+    UnifiedAntigravityAdapter,
+)
 from agy_cockpit.backend.services.approval_service import ApprovalService
 from agy_cockpit.backend.services.diff_service import DiffService
 from agy_cockpit.backend.services.event_service import EventService
@@ -70,7 +75,7 @@ class RunService:
         self.conn = conn
         self.event_service = event_service
         self.approval_service = approval_service
-        self.adapter = adapter or RealSDKAntigravityAdapter()
+        self.adapter = adapter or UnifiedAntigravityAdapter()
         self.diff_service = diff_service or DiffService()
 
         self.run_repo = RunRepository(conn)
@@ -158,7 +163,14 @@ class RunService:
             replayable=True,
         )
 
-        # 6. Launch execution task
+        # 6. Resolve attachment paths and launch execution task
+        attachment_paths: List[str] = []
+        if attachment_ids:
+            for att_id in attachment_ids:
+                att = await self.attachment_repo.get_by_id(att_id)
+                if att and att.file_path and os.path.exists(att.file_path):
+                    attachment_paths.append(att.file_path)
+
         cancel_token = asyncio.Event()
         task = asyncio.create_task(
             self._execute_turn(
@@ -169,6 +181,7 @@ class RunService:
                 prompt=prompt,
                 model_slug=model_slug or conv.model_slug,
                 cancel_token=cancel_token,
+                attachments=attachment_paths,
             )
         )
 
@@ -184,6 +197,7 @@ class RunService:
         prompt: str,
         model_slug: str,
         cancel_token: asyncio.Event,
+        attachments: Optional[List[str]] = None,
     ) -> None:
         """Executes the agent turn and translates events."""
         settings = await self.settings_repo.get()
@@ -229,12 +243,16 @@ class RunService:
             await self.tool_repo.create(tool_rec)
 
             # Pre-edit snapshot for diff tracking
-            if tool_name in ("create_file", "edit_file") and self.diff_service:
+            file_mutating_tools = (
+                "create_file", "edit_file", "write_to_file", "replace_file_content", "multi_replace_file_content"
+            )
+            if tool_name in file_mutating_tools and self.diff_service:
                 target_p = (
                     args.get("target_path")
                     or args.get("file_path")
                     or args.get("path")
                     or args.get("TargetFile")
+                    or args.get("target_file")
                 )
                 if target_p:
                     self.diff_service.capture_pre_edit_snapshot(workspace_path, str(target_p))
@@ -288,8 +306,11 @@ class RunService:
                 replayable=True,
             )
 
-            # Track file changes
-            if success and tool_name in ("create_file", "edit_file") and self.diff_service:
+            # Track file changes and register artifacts
+            file_mutating_tools = (
+                "create_file", "edit_file", "write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image"
+            )
+            if success and tool_name in file_mutating_tools:
                 tool_rec = await self.tool_repo.get_by_id(tool_id)
                 if tool_rec:
                     try:
@@ -301,28 +322,70 @@ class RunService:
                         or args.get("file_path")
                         or args.get("path")
                         or args.get("TargetFile")
+                        or args.get("target_file")
+                        or args.get("ImageName")
                     )
                     if target_p:
-                        diff = self.diff_service.get_file_diff(workspace_path, str(target_p))
-                        status_val = (
-                            diff.status
-                            if diff.status in ("added", "modified", "deleted", "renamed")
-                            else "modified"
+                        clean_target = str(target_p)
+                        if self.diff_service and "image" not in tool_name.lower():
+                            diff = self.diff_service.get_file_diff(workspace_path, clean_target)
+                            clean_target = diff.file_path
+                            status_val = (
+                                diff.status
+                                if diff.status in ("added", "modified", "deleted", "renamed")
+                                else "modified"
+                            )
+                            fc = FileChange(
+                                run_id=run.id,
+                                file_path=clean_target,
+                                status=FileChangeStatus(status_val),
+                                timestamp=utc_now_iso(),
+                            )
+                            await self.file_change_repo.create(fc)
+                            await self.event_service.emit_event(
+                                event_type="file_changed",
+                                session_id=session_id,
+                                payload={
+                                    "file_path": clean_target,
+                                    "status": status_val,
+                                    "run_id": run.id,
+                                },
+                                conversation_id=conv.id,
+                                run_id=run.id,
+                                replayable=True,
+                            )
+
+                        # Create and emit Artifact
+                        abs_target = (
+                            os.path.abspath(os.path.join(workspace_path, clean_target))
+                            if not os.path.isabs(clean_target)
+                            else clean_target
                         )
-                        fc = FileChange(
+                        art_kind = ArtifactKind.IMAGE if "image" in tool_name.lower() else ArtifactKind.FILE
+                        art = Artifact(
                             run_id=run.id,
-                            file_path=str(target_p),
-                            status=FileChangeStatus(status_val),
-                            timestamp=utc_now_iso(),
+                            kind=art_kind,
+                            name=os.path.basename(clean_target),
+                            mime_type="image/png" if art_kind == ArtifactKind.IMAGE else "text/plain",
+                            path_or_storage_key=abs_target,
+                            preview_supported=True,
+                            created_at=utc_now_iso(),
+                            updated_at=utc_now_iso(),
                         )
-                        await self.file_change_repo.create(fc)
+                        await self.artifact_repo.create(art)
                         await self.event_service.emit_event(
-                            event_type="file_changed",
+                            event_type="artifact_created",
                             session_id=session_id,
                             payload={
-                                "file_path": str(target_p),
-                                "status": status_val,
-                                "run_id": run.id,
+                                "id": art.id,
+                                "run_id": art.run_id,
+                                "kind": art.kind.value,
+                                "name": art.name,
+                                "mime_type": art.mime_type,
+                                "path_or_storage_key": art.path_or_storage_key,
+                                "preview_supported": art.preview_supported,
+                                "created_at": art.created_at,
+                                "updated_at": art.updated_at,
                             },
                             conversation_id=conv.id,
                             run_id=run.id,
@@ -348,19 +411,11 @@ class RunService:
                 parent_id=parent_id,
                 name_or_role=name_or_role,
                 state=sub_state,
-                depth=depth,
                 current_activity=current_activity,
+                depth=depth,
                 started_at=utc_now_iso(),
             )
-            existing_node = await self.subagent_repo.get_by_id(subagent_id)
-            if existing_node:
-                await self.subagent_repo.update_state(
-                    node_id=subagent_id,
-                    state=sub_state,
-                    current_activity=current_activity,
-                )
-            else:
-                await self.subagent_repo.create(node)
+            await self.subagent_repo.upsert(node)
 
             await self.event_service.emit_event(
                 event_type="subagent_update",
@@ -408,6 +463,7 @@ class RunService:
                 cancellation_token=cancel_token,
                 on_tool_log=on_tool_log,
                 on_subagent_update=on_subagent_update,
+                attachments=attachments,
             )
 
             now = utc_now_iso()

@@ -24,6 +24,9 @@ export interface Message {
   author_time: string;
   content: string;
   attachment_ids: string[];
+  run_id?: string;
+  reasoning?: string;
+  tools?: ToolExecution[];
 }
 
 export type RunState =

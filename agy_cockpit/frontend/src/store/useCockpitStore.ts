@@ -343,18 +343,27 @@ export const useCockpitStore = create<CockpitState>((set) => ({
             usage,
           };
 
-      // If output was streamed and run completed, persist an assistant message in state
+      // If output was streamed, reasoning captured, or tools invoked, persist an assistant message in state
       let updatedMessages = state.messages;
       let updatedConvMsgIds = state.conversationMessageIds;
-      if (state.streamingOutput && state.activeConversationId) {
+      if (
+        (state.streamingOutput || Object.keys(state.activeTools).length > 0 || state.reasoning) &&
+        state.activeConversationId
+      ) {
         const asstMsgId = `asst-${runId}`;
+        const content =
+          state.streamingOutput ||
+          (runState === 'failed' && errorMessage ? `Run failed: ${errorMessage}` : '');
         const asstMsg: Message = {
           id: asstMsgId,
           conversation_id: state.activeConversationId,
           role: 'assistant',
           author_time: completedAt,
-          content: state.streamingOutput,
+          content,
           attachment_ids: [],
+          run_id: runId,
+          reasoning: state.reasoning || undefined,
+          tools: Object.values(state.activeTools),
         };
         const currentIds = state.conversationMessageIds[state.activeConversationId] || [];
         if (!currentIds.includes(asstMsgId)) {

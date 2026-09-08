@@ -56,6 +56,19 @@ class FileDiffData:
     truncated: bool = False
 
 
+def normalize_rel_path(workspace_path: str, path_str: str) -> str:
+    """Normalizes an absolute or relative path to a workspace-relative POSIX path."""
+    try:
+        ws_abs = os.path.abspath(workspace_path)
+        abs_p = os.path.abspath(os.path.join(workspace_path, path_str) if not os.path.isabs(path_str) else path_str)
+        if abs_p.startswith(ws_abs):
+            rel = os.path.relpath(abs_p, ws_abs)
+            return rel.replace("\\", "/")
+    except Exception:
+        pass
+    return path_str.replace("\\", "/").lstrip("/")
+
+
 class DiffService:
     """Computes file diffs using Git tree inspection or pre-edit snapshots."""
 
@@ -63,9 +76,10 @@ class DiffService:
         # Pre-edit snapshot cache keyed by (workspace_path, rel_path)
         self._snapshots: Dict[str, str] = {}
 
-    def capture_pre_edit_snapshot(self, workspace_path: str, rel_path: str) -> None:
+    def capture_pre_edit_snapshot(self, workspace_path: str, path_or_rel: str) -> None:
         """Captures before-state of a file prior to modification."""
         try:
+            rel_path = normalize_rel_path(workspace_path, path_or_rel)
             abs_path = resolve_safe_path(workspace_path, rel_path)
             key = f"{workspace_path}:{rel_path}"
             if os.path.exists(abs_path) and os.path.isfile(abs_path):
@@ -74,10 +88,11 @@ class DiffService:
             else:
                 self._snapshots[key] = ""
         except Exception as e:
-            logger.debug("Failed capturing snapshot for %s: %s", rel_path, e)
+            logger.debug("Failed capturing snapshot for %s: %s", path_or_rel, e)
 
-    def get_file_diff(self, workspace_path: str, rel_path: str) -> FileDiffData:
+    def get_file_diff(self, workspace_path: str, path_or_rel: str) -> FileDiffData:
         """Computes diff data between original and modified file state."""
+        rel_path = normalize_rel_path(workspace_path, path_or_rel)
         abs_path = resolve_safe_path(workspace_path, rel_path)
         _, ext = os.path.splitext(rel_path)
         language = EXT_TO_LANG.get(ext.lower(), "plaintext")

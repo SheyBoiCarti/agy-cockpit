@@ -234,16 +234,53 @@ class WebSocketRouter:
 
         session.active_conversation_id = conv.id
 
-        # Fetch messages
+        # Fetch messages and historical tool executions
         from agy_cockpit.backend.db.repositories.message_repository import MessageRepository
+        from agy_cockpit.backend.db.repositories.run_repository import RunRepository
+        from agy_cockpit.backend.db.repositories.tool_repository import ToolRepository
+
         msg_repo = MessageRepository(self.conversation_service.conn)
+        run_repo = RunRepository(self.conversation_service.conn)
+        tool_repo = ToolRepository(self.conversation_service.conn)
+
         messages = await msg_repo.list_by_conversation(conv.id)
+        runs = await run_repo.list_by_conversation(conv.id)
+
+        # Index tool executions by user_message_id
+        run_tools_map = {}
+        for r in runs:
+            tools = await tool_repo.list_by_run(r.id)
+            if tools:
+                run_tools_map[r.user_message_id] = [
+                    {
+                        "id": t.id,
+                        "run_id": t.run_id,
+                        "sdk_tool_name": t.sdk_tool_name,
+                        "args": t.parsed_args,
+                        "state": t.state.value if hasattr(t.state, "value") else str(t.state),
+                        "started_at": t.started_at,
+                        "finished_at": t.finished_at,
+                        "success": t.success,
+                        "output_summary": t.output_summary,
+                        "logs": [],
+                    }
+                    for t in tools
+                ]
+
+        msg_dicts = []
+        last_user_msg_id = None
+        for m in messages:
+            md = m.model_dump()
+            role_val = m.role.value if hasattr(m.role, "value") else str(m.role)
+            if role_val == "user":
+                last_user_msg_id = m.id
+            elif role_val == "assistant" and last_user_msg_id and last_user_msg_id in run_tools_map:
+                md["tools"] = run_tools_map[last_user_msg_id]
+            msg_dicts.append(md)
 
         # Check for active run
         active_run = None
         if self.run_service:
-            from agy_cockpit.backend.db.repositories.run_repository import RunRepository
-            run_repo = RunRepository(self.conversation_service.conn)
             active_run_obj = await run_repo.get_active_for_conversation(conv.id)
             if active_run_obj:
                 active_run = active_run_obj.model_dump()
@@ -254,7 +291,7 @@ class WebSocketRouter:
             conversation_id=conv.id,
             payload={
                 "conversation": conv.model_dump(),
-                "messages": [m.model_dump() for m in messages],
+                "messages": msg_dicts,
                 "active_run": active_run,
             },
         )

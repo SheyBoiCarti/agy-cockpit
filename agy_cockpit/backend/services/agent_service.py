@@ -5,7 +5,8 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+import shutil
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 import google.antigravity as agy
 from google.antigravity.hooks import policy
@@ -56,6 +57,7 @@ class AntigravityAdapter(abc.ABC):
         cancellation_token: asyncio.Event,
         on_tool_log: Optional[Callable[[str, str, bool], Awaitable[None]]] = None,
         on_subagent_update: Optional[Callable[[str, Optional[str], str, str, Optional[str], int], Awaitable[None]]] = None,
+        attachments: Optional[List[str]] = None,
     ) -> TurnResult:
         pass
 
@@ -110,18 +112,43 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
         cancellation_token: asyncio.Event,
         on_tool_log: Optional[Callable[[str, str, bool], Awaitable[None]]] = None,
         on_subagent_update: Optional[Callable[[str, Optional[str], str, str, Optional[str], int], Awaitable[None]]] = None,
+        attachments: Optional[List[str]] = None,
     ) -> TurnResult:
         policies = self._build_policies(policy_preset, approval_handler)
-        api_key = os.environ.get("GEMINI_API_KEY", "dummy-key")
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+
+        active_tools: Dict[str, str] = {}
+
+        @agy.hooks.post_tool_call
+        async def on_post_tool(data: agy.types.ToolResult):
+            tool_id = data.id or data.step_id or "tool"
+            tool_name = data.name or active_tools.get(tool_id, "tool")
+            success = data.error is None and data.exception is None
+            summary = str(data.result) if data.result is not None else (str(data.error) if data.error else None)
+            if summary and on_tool_log:
+                await on_tool_log(tool_id, summary, not success)
+            await on_tool_finish(tool_id, tool_name, success, summary)
+            active_tools.pop(tool_id, None)
+
+        @agy.hooks.on_tool_error
+        async def on_tool_err(data: Any):
+            tool_id = getattr(data, "id", None) or "tool"
+            tool_name = getattr(data, "name", "tool")
+            err_msg = str(getattr(data, "error", data))
+            if on_tool_log:
+                await on_tool_log(tool_id, err_msg, True)
+            await on_tool_finish(tool_id, tool_name, False, err_msg)
+            active_tools.pop(tool_id, None)
 
         config = agy.LocalAgentConfig(
-            api_key=api_key,
+            api_key=api_key or "dummy-key",
             conversation_id=conversation_id,
             session_continuation_mode=SessionContinuationMode.CREATE_OR_RESUME,
             save_dir=save_dir,
             workspaces=[workspace_path],
             model=model_slug,
             policies=policies,
+            hooks=[on_post_tool, on_tool_err],
             capabilities=agy.CapabilitiesConfig(
                 enable_subagents=True,
             ),
@@ -130,9 +157,21 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
         accumulated_thoughts: List[str] = []
         accumulated_tokens: List[str] = []
 
+        chat_input: Any = prompt
+        if attachments:
+            media_items = []
+            for att_path in attachments:
+                if os.path.exists(att_path):
+                    try:
+                        media_items.append(agy.types.from_file(att_path))
+                    except Exception as me:
+                        logger.warning("Failed loading attachment %s: %s", att_path, me)
+            if media_items:
+                chat_input = [prompt, *media_items]
+
         try:
             async with agy.Agent(config) as agent:
-                response = await agent.chat(prompt)
+                response = await agent.chat(chat_input)
 
                 # Monitor cancellation
                 async def watch_cancellation():
@@ -161,7 +200,9 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                 async def consume_tools():
                     try:
                         async for call in response.tool_calls:
-                            await on_tool_start(call.id or "call", call.name, call.args)
+                            call_id = call.id or "call"
+                            active_tools[call_id] = call.name
+                            await on_tool_start(call_id, call.name, call.args)
                     except Exception:
                         pass
 
@@ -173,6 +214,9 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                     )
                 finally:
                     cancel_watcher.cancel()
+                    for t_id, t_name in list(active_tools.items()):
+                        await on_tool_finish(t_id, t_name, True, "Completed")
+                    active_tools.clear()
 
                 if cancellation_token.is_set():
                     return TurnResult(
@@ -207,6 +251,302 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                 error_code="SDK_EXECUTION_ERROR",
                 error_message=str(e),
             )
+
+
+class CLISubscriptionAdapter(AntigravityAdapter):
+    """Production adapter using Antigravity CLI (agy) with user's Antigravity subscription session."""
+
+    def __init__(self, agy_binary_path: Optional[str] = None):
+        self.agy_path = agy_binary_path or shutil.which("agy") or "agy"
+
+    async def run_turn(
+        self,
+        conversation_id: str,
+        save_dir: str,
+        workspace_path: str,
+        prompt: str,
+        model_slug: str,
+        policy_preset: str,
+        approval_handler: Callable[[agy.types.ToolCall], Awaitable[bool]],
+        on_thought: Callable[[str], Awaitable[None]],
+        on_token: Callable[[str], Awaitable[None]],
+        on_tool_start: Callable[[str, str, dict], Awaitable[None]],
+        on_tool_finish: Callable[[str, str, bool, Optional[str]], Awaitable[None]],
+        cancellation_token: asyncio.Event,
+        on_tool_log: Optional[Callable[[str, str, bool], Awaitable[None]]] = None,
+        on_subagent_update: Optional[Callable[[str, Optional[str], str, str, Optional[str], int], Awaitable[None]]] = None,
+        attachments: Optional[List[str]] = None,
+    ) -> TurnResult:
+        full_prompt = prompt
+        if attachments:
+            att_lines = "\n".join([f"- {p}" for p in attachments])
+            full_prompt = f"{prompt}\n\nAttached files for context:\n{att_lines}"
+
+        cmd = [
+            self.agy_path,
+            "--conversation", conversation_id,
+            "--print", full_prompt,
+            "--output-format", "stream-json",
+            "--add-dir", workspace_path,
+        ]
+        if model_slug:
+            cmd.extend(["--model", model_slug])
+        if policy_preset == "always-proceed":
+            cmd.append("--dangerously-skip-permissions")
+
+        logger.info(
+            "Executing turn via Antigravity CLI subscription: conversation_id=%s, model=%s",
+            conversation_id,
+            model_slug,
+        )
+
+        accumulated_thoughts: List[str] = []
+        accumulated_tokens: List[str] = []
+        active_tools: Dict[str, str] = {}
+
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=workspace_path,
+            )
+
+            async def watch_cancel():
+                await cancellation_token.wait()
+                if proc and proc.returncode is None:
+                    try:
+                        proc.terminate()
+                        await asyncio.sleep(0.5)
+                        if proc.returncode is None:
+                            proc.kill()
+                    except Exception:
+                        pass
+
+            cancel_task = asyncio.create_task(watch_cancel())
+
+            try:
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if not line_str:
+                        continue
+                    try:
+                        data = json.loads(line_str)
+                    except Exception:
+                        continue
+
+                    event_name = data.get("event") or data.get("type")
+                    if event_name == "step_update":
+                        step = data.get("step_update", {})
+                        delta_obj = data.get("delta") or step.get("delta") or {}
+                        step_type = step.get("step_type")
+                        state = step.get("state")
+
+                        # Text delta streaming
+                        text_chunk = step.get("text_delta") or delta_obj.get("text") or step.get("text")
+                        if text_chunk:
+                            accumulated_tokens.append(text_chunk)
+                            await on_token(text_chunk)
+
+                        # Thinking delta streaming
+                        thinking_chunk = delta_obj.get("thinking") or step.get("thinking")
+                        if thinking_chunk:
+                            accumulated_thoughts.append(thinking_chunk)
+                            await on_thought(thinking_chunk)
+
+                        # Delta-based tool calls
+                        for tc_data in delta_obj.get("tool_calls", []):
+                            tc_id = tc_data.get("id") or f"tool-{len(active_tools)}"
+                            tc_name = tc_data.get("name", "tool")
+                            tc_args = tc_data.get("args", {})
+                            active_tools[tc_id] = tc_name
+                            await on_tool_start(tc_id, tc_name, tc_args)
+
+                        if step_type == "agent_response":
+                            delta = step.get("text_delta")
+                            if delta and not text_chunk:
+                                accumulated_tokens.append(delta)
+                                await on_token(delta)
+                            usage = step.get("usage")
+                            if usage and usage.get("thinking_tokens"):
+                                th = f"[Thinking: {usage.get('thinking_tokens')} tokens]\n"
+                                if th not in accumulated_thoughts:
+                                    accumulated_thoughts.append(th)
+                                    await on_thought(th)
+
+                        elif step_type == "tool":
+                            tool_name = step.get("tool_name") or step.get("tool_info", {}).get("name", "tool")
+                            step_idx = step.get("step_index", 0)
+                            tool_id = f"tool-{step_idx}-{tool_name}"
+                            tool_info = step.get("tool_info", {})
+
+                            if state == "ACTIVE":
+                                active_tools[tool_id] = tool_name
+                                params = tool_info.get("parameters", {})
+                                if policy_preset != "always-proceed" and tool_name in (
+                                    "run_command", "write_to_file", "replace_file_content", "create_file", "edit_file"
+                                ):
+                                    tc = agy.types.ToolCall(id=tool_id, name=tool_name, args=params)
+                                    approved = await approval_handler(tc)
+                                    if not approved:
+                                        await on_tool_start(tool_id, tool_name, params)
+                                        await on_tool_finish(tool_id, tool_name, False, "User rejected execution")
+                                        active_tools.pop(tool_id, None)
+                                        continue
+                                await on_tool_start(tool_id, tool_name, params)
+
+                            elif state in ("DONE", "ERROR"):
+                                success = (state == "DONE")
+                                out = tool_info.get("output") or ""
+                                if not out and isinstance(tool_info.get("error"), dict):
+                                    out = tool_info["error"].get("message", "")
+                                if out and on_tool_log:
+                                    await on_tool_log(tool_id, str(out), not success)
+                                await on_tool_finish(tool_id, tool_name, success, str(out)[:500])
+                                active_tools.pop(tool_id, None)
+
+                            # Subagent tracking
+                            if tool_name in ("invoke_subagent", "define_subagent") and on_subagent_update:
+                                subagent_info = step.get("subagent_info") or {}
+                                sa_id = subagent_info.get("conversation_id") or f"subagent-{step_idx}"
+                                role = subagent_info.get("role") or tool_info.get("parameters", {}).get("Role") or "Subagent"
+                                sa_state = "completed" if state == "DONE" else "running"
+                                await on_subagent_update(sa_id, None, role, sa_state, f"Executing {tool_name}", 1)
+
+                    elif event_name == "result":
+                        res = data.get("result", {})
+                        if isinstance(res, dict):
+                            final_text = res.get("response") or res.get("text") or "".join(accumulated_tokens)
+                            usage_data = res.get("usage")
+                        else:
+                            final_text = "".join(accumulated_tokens)
+                            usage_data = None
+                        await proc.wait()
+                        return TurnResult(
+                            final_text=final_text,
+                            reasoning_text="".join(accumulated_thoughts),
+                            state=RunState.COMPLETED,
+                            usage=usage_data,
+                        )
+
+                await proc.wait()
+                if cancellation_token.is_set():
+                    return TurnResult(
+                        final_text="".join(accumulated_tokens),
+                        reasoning_text="".join(accumulated_thoughts),
+                        state=RunState.CANCELLED,
+                    )
+                return TurnResult(
+                    final_text="".join(accumulated_tokens),
+                    reasoning_text="".join(accumulated_thoughts),
+                    state=RunState.COMPLETED,
+                )
+            finally:
+                cancel_task.cancel()
+                for t_id, t_name in list(active_tools.items()):
+                    await on_tool_finish(t_id, t_name, True, "Completed")
+                active_tools.clear()
+
+        except asyncio.CancelledError:
+            return TurnResult("".join(accumulated_tokens), "".join(accumulated_thoughts), RunState.CANCELLED)
+        except Exception as e:
+            logger.exception("CLI subscription execution error: %s", e)
+            return TurnResult(
+                final_text="".join(accumulated_tokens),
+                reasoning_text="".join(accumulated_thoughts),
+                state=RunState.FAILED,
+                error_code="CLI_EXECUTION_ERROR",
+                error_message=str(e),
+            )
+
+
+class UnifiedAntigravityAdapter(AntigravityAdapter):
+    """Auto-detecting adapter that bridges the user's Antigravity subscription
+
+    or falls back to the Python SDK if an explicit GEMINI_API_KEY is configured.
+    """
+
+    def __init__(
+        self,
+        cli_adapter: Optional[CLISubscriptionAdapter] = None,
+        sdk_adapter: Optional[RealSDKAntigravityAdapter] = None,
+    ):
+        self.cli_adapter = cli_adapter or CLISubscriptionAdapter()
+        self.sdk_adapter = sdk_adapter or RealSDKAntigravityAdapter()
+
+    def _should_use_cli(self) -> bool:
+        has_agy = bool(shutil.which("agy"))
+        has_api_key = bool(os.environ.get("GEMINI_API_KEY"))
+        has_oauth = os.path.exists(os.path.expanduser("~/.gemini/antigravity-cli/antigravity-oauth-token"))
+        if has_agy and (has_oauth or not has_api_key):
+            return True
+        return False
+
+    async def run_turn(
+        self,
+        conversation_id: str,
+        save_dir: str,
+        workspace_path: str,
+        prompt: str,
+        model_slug: str,
+        policy_preset: str,
+        approval_handler: Callable[[agy.types.ToolCall], Awaitable[bool]],
+        on_thought: Callable[[str], Awaitable[None]],
+        on_token: Callable[[str], Awaitable[None]],
+        on_tool_start: Callable[[str, str, dict], Awaitable[None]],
+        on_tool_finish: Callable[[str, str, bool, Optional[str]], Awaitable[None]],
+        cancellation_token: asyncio.Event,
+        on_tool_log: Optional[Callable[[str, str, bool], Awaitable[None]]] = None,
+        on_subagent_update: Optional[Callable[[str, Optional[str], str, str, Optional[str], int], Awaitable[None]]] = None,
+        attachments: Optional[List[str]] = None,
+    ) -> TurnResult:
+        if self._should_use_cli():
+            logger.info("Using CLISubscriptionAdapter for Antigravity subscription session")
+            res = await self.cli_adapter.run_turn(
+                conversation_id=conversation_id,
+                save_dir=save_dir,
+                workspace_path=workspace_path,
+                prompt=prompt,
+                model_slug=model_slug,
+                policy_preset=policy_preset,
+                approval_handler=approval_handler,
+                on_thought=on_thought,
+                on_token=on_token,
+                on_tool_start=on_tool_start,
+                on_tool_finish=on_tool_finish,
+                cancellation_token=cancellation_token,
+                on_tool_log=on_tool_log,
+                on_subagent_update=on_subagent_update,
+                attachments=attachments,
+            )
+            if res.state != RunState.FAILED or not os.environ.get("GEMINI_API_KEY"):
+                return res
+            logger.warning(
+                "CLI subscription adapter failed (%s); falling back to SDK adapter",
+                res.error_message,
+            )
+
+        return await self.sdk_adapter.run_turn(
+            conversation_id=conversation_id,
+            save_dir=save_dir,
+            workspace_path=workspace_path,
+            prompt=prompt,
+            model_slug=model_slug,
+            policy_preset=policy_preset,
+            approval_handler=approval_handler,
+            on_thought=on_thought,
+            on_token=on_token,
+            on_tool_start=on_tool_start,
+            on_tool_finish=on_tool_finish,
+            cancellation_token=cancellation_token,
+            on_tool_log=on_tool_log,
+            on_subagent_update=on_subagent_update,
+            attachments=attachments,
+        )
 
 
 class MockAntigravityAdapter(AntigravityAdapter):
@@ -248,6 +588,7 @@ class MockAntigravityAdapter(AntigravityAdapter):
         cancellation_token: asyncio.Event,
         on_tool_log: Optional[Callable[[str, str, bool], Awaitable[None]]] = None,
         on_subagent_update: Optional[Callable[[str, Optional[str], str, str, Optional[str], int], Awaitable[None]]] = None,
+        attachments: Optional[List[str]] = None,
     ) -> TurnResult:
         accumulated_thoughts = []
         accumulated_tokens = []

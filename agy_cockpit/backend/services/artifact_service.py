@@ -56,9 +56,22 @@ class ArtifactService:
     async def list_by_run(self, run_id: str) -> List[Artifact]:
         return await self.repo.list_by_run(run_id)
 
-    def read_artifact_content(self, artifact: Artifact) -> str:
-        """Reads content if file exists on disk, else returns stored path/key."""
-        if os.path.exists(artifact.path_or_storage_key) and os.path.isfile(artifact.path_or_storage_key):
-            with open(artifact.path_or_storage_key, "r", encoding="utf-8", errors="replace") as f:
+    def read_artifact_content(
+        self,
+        artifact: Artifact,
+        allowed_dirs: Optional[List[str]] = None,
+    ) -> str:
+        """Reads content if file exists on disk and is within allowed directories, else returns stored path/key."""
+        path = os.path.abspath(artifact.path_or_storage_key)
+        if allowed_dirs:
+            is_allowed = any(
+                path == os.path.abspath(d) or path.startswith(os.path.abspath(d) + os.sep)
+                for d in allowed_dirs
+            )
+            if not is_allowed:
+                raise PermissionError(f"Access to path '{path}' is outside allowed directories.")
+
+        if os.path.exists(path) and os.path.isfile(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
                 return f.read(500_000)
         return artifact.path_or_storage_key

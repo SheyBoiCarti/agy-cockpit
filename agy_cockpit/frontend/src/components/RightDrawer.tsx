@@ -3,6 +3,8 @@ import { useCockpitStore } from '../store/useCockpitStore';
 import { wsService } from '../services/websocket';
 import { DiffEditor } from '@monaco-editor/react';
 import Convert from 'ansi-to-html';
+import { MarkdownView } from './MarkdownView';
+import { Artifact } from '../types/models';
 import {
   X,
   FileDiff,
@@ -10,6 +12,8 @@ import {
   Boxes,
   Layers,
   FileText,
+  Eye,
+  Loader2,
 } from 'lucide-react';
 
 const ansiConverter = new Convert({
@@ -31,6 +35,9 @@ export const RightDrawer: React.FC = () => {
   const artifacts = useCockpitStore((s) => Object.values(s.artifacts));
 
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
+  const [previewArtifact, setPreviewArtifact] = useState<Artifact | null>(null);
+  const [artifactContent, setArtifactContent] = useState<string | null>(null);
+  const [isLoadingArtifact, setIsLoadingArtifact] = useState(false);
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
   // Default to first tool with logs if not selected
@@ -52,6 +59,28 @@ export const RightDrawer: React.FC = () => {
 
   const handleSelectFileDiff = (path: string) => {
     wsService.requestFileDiff(path);
+  };
+
+  const handleSelectArtifact = async (art: Artifact) => {
+    setPreviewArtifact(art);
+    if (art.mime_type.startsWith('image/')) {
+      setArtifactContent(null);
+      return;
+    }
+    setIsLoadingArtifact(true);
+    try {
+      const res = await fetch(`/api/artifacts/${art.id}/content`);
+      if (res.ok) {
+        const text = await res.text();
+        setArtifactContent(text);
+      } else {
+        setArtifactContent(`Failed to load artifact content (${res.statusText})`);
+      }
+    } catch (e: any) {
+      setArtifactContent(`Error loading artifact: ${e?.message || String(e)}`);
+    } finally {
+      setIsLoadingArtifact(false);
+    }
   };
 
   return (
@@ -267,32 +296,89 @@ export const RightDrawer: React.FC = () => {
 
         {/* ARTIFACTS TAB */}
         {activeDrawerTab === 'artifacts' && (
-          <div className="flex-1 p-4 overflow-y-auto space-y-3 bg-neutral-950">
-            {artifacts.length === 0 ? (
-              <div className="text-center py-16 text-neutral-400 text-xs">
-                <Layers className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                <span>No artifacts generated yet.</span>
-              </div>
-            ) : (
-              artifacts.map((art) => (
-                <div
-                  key={art.id}
-                  className="p-3 bg-neutral-900 border border-neutral-800 rounded-xl space-y-1.5 text-xs"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2 font-medium text-neutral-200 truncate">
-                      <FileText className="w-4 h-4 text-amber-400 shrink-0" />
-                      <span className="truncate">{art.name}</span>
-                    </div>
-                    <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 bg-neutral-800 text-neutral-400 rounded">
-                      {art.kind}
+          <div className="flex-1 flex flex-col min-h-0 bg-neutral-950">
+            {previewArtifact ? (
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Preview Header */}
+                <div className="p-3 border-b border-neutral-800 bg-neutral-900/80 flex items-center justify-between">
+                  <div className="flex items-center space-x-2 truncate">
+                    <FileText className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span className="text-xs font-semibold text-neutral-200 truncate font-mono">
+                      {previewArtifact.name}
+                    </span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-800 text-neutral-400 rounded">
+                      {previewArtifact.kind}
                     </span>
                   </div>
-                  <div className="text-[11px] text-neutral-400 font-mono">
-                    {art.mime_type}
-                  </div>
+                  <button
+                    onClick={() => setPreviewArtifact(null)}
+                    className="p-1 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 rounded transition-colors"
+                    title="Close preview"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-              ))
+
+                {/* Preview Body */}
+                <div className="flex-1 p-4 overflow-y-auto text-xs select-text">
+                  {previewArtifact.mime_type.startsWith('image/') ? (
+                    <div className="flex items-center justify-center p-4">
+                      <img
+                        src={`/api/artifacts/${previewArtifact.id}/content`}
+                        alt={previewArtifact.name}
+                        className="max-h-[70vh] rounded-lg border border-neutral-800 object-contain shadow-lg"
+                      />
+                    </div>
+                  ) : isLoadingArtifact ? (
+                    <div className="flex items-center justify-center py-16 text-neutral-400 space-x-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                      <span>Loading artifact content...</span>
+                    </div>
+                  ) : artifactContent !== null ? (
+                    previewArtifact.mime_type === 'text/markdown' || previewArtifact.name.endsWith('.md') ? (
+                      <MarkdownView content={artifactContent} />
+                    ) : (
+                      <pre className="p-3 rounded bg-neutral-900 border border-neutral-800 font-mono text-neutral-300 text-xs overflow-x-auto whitespace-pre-wrap">
+                        {artifactContent}
+                      </pre>
+                    )
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <div className="flex-1 p-4 overflow-y-auto space-y-3">
+                {artifacts.length === 0 ? (
+                  <div className="text-center py-16 text-neutral-400 text-xs">
+                    <Layers className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                    <span>No artifacts generated yet.</span>
+                  </div>
+                ) : (
+                  artifacts.map((art) => (
+                    <div
+                      key={art.id}
+                      onClick={() => handleSelectArtifact(art)}
+                      className="p-3 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 hover:bg-neutral-850 cursor-pointer rounded-xl space-y-1.5 text-xs transition-all group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2 font-medium text-neutral-200 truncate">
+                          <FileText className="w-4 h-4 text-amber-400 shrink-0 group-hover:text-amber-300" />
+                          <span className="truncate font-mono">{art.name}</span>
+                        </div>
+                        <div className="flex items-center space-x-1.5">
+                          <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 bg-neutral-800 text-neutral-400 rounded">
+                            {art.kind}
+                          </span>
+                          <Eye className="w-3.5 h-3.5 text-neutral-500 group-hover:text-neutral-300" />
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-neutral-400 font-mono flex items-center justify-between">
+                        <span>{art.mime_type}</span>
+                        {art.size_bytes ? <span>{Math.round(art.size_bytes / 1024)} KB</span> : null}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             )}
           </div>
         )}
