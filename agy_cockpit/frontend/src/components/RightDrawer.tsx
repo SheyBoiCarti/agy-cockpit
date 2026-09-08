@@ -14,6 +14,8 @@ import {
   FileText,
   Eye,
   Loader2,
+  AlertTriangle,
+  Scissors,
 } from 'lucide-react';
 
 const ansiConverter = new Convert({
@@ -184,22 +186,42 @@ export const RightDrawer: React.FC = () => {
             </div>
 
             {/* Monaco Diff Viewer */}
-            <div className="flex-1 bg-neutral-950">
+            <div className="flex-1 bg-neutral-950 flex flex-col">
               {selectedDiffFile && diffData ? (
-                <DiffEditor
-                  height="100%"
-                  language={diffData.language || 'typescript'}
-                  original={diffData.original}
-                  modified={diffData.modified}
-                  theme="vs-dark"
-                  options={{
-                    readOnly: true,
-                    renderSideBySide: true,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    fontSize: 12,
-                  }}
-                />
+                <>
+                  {/* Binary file warning */}
+                  {diffData.is_binary && (
+                    <div className="flex items-center space-x-2 px-4 py-2.5 bg-amber-950/40 border-b border-amber-800/40 text-amber-300 text-xs">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span className="font-medium">Binary file</span>
+                      <span className="text-amber-200/70">— Content diff is not available for binary files.</span>
+                    </div>
+                  )}
+                  {/* Truncated diff warning */}
+                  {diffData.truncated && (
+                    <div className="flex items-center space-x-2 px-4 py-2.5 bg-blue-950/40 border-b border-blue-800/40 text-blue-300 text-xs">
+                      <Scissors className="w-4 h-4 shrink-0" />
+                      <span className="font-medium">Diff truncated</span>
+                      <span className="text-blue-200/70">— File is too large; only a portion is shown.</span>
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <DiffEditor
+                      height="100%"
+                      language={diffData.language || 'typescript'}
+                      original={diffData.original}
+                      modified={diffData.modified}
+                      theme="vs-dark"
+                      options={{
+                        readOnly: true,
+                        renderSideBySide: true,
+                        minimap: { enabled: false },
+                        scrollBeyondLastLine: false,
+                        fontSize: 12,
+                      }}
+                    />
+                  </div>
+                </>
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-neutral-400 text-xs p-8 text-center">
                   <FileDiff className="w-8 h-8 mb-2 opacity-50" />

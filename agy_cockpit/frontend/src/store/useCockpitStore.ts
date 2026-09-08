@@ -55,7 +55,7 @@ interface CockpitState {
   // UI state
   activeDrawerTab: DrawerTab;
   selectedDiffFile: string | null;
-  diffData: { original: string; modified: string; language: string; is_binary?: boolean } | null;
+  diffData: { original: string; modified: string; language: string; is_binary?: boolean; truncated?: boolean } | null;
   settings: Settings;
   models: ModelOption[];
 
@@ -96,7 +96,7 @@ interface CockpitState {
   ) => void;
   applySyncState: (payload: SyncStatePayload) => void;
   setActiveDrawerTab: (tab: DrawerTab) => void;
-  setSelectedDiffFile: (file: string | null, diffData?: { original: string; modified: string; language: string; is_binary?: boolean } | null) => void;
+  setSelectedDiffFile: (file: string | null, diffData?: { original: string; modified: string; language: string; is_binary?: boolean; truncated?: boolean } | null) => void;
   setSettings: (settings: Partial<Settings>) => void;
   setModels: (models: ModelOption[]) => void;
   setMentionSearch: (query: string, results: Array<{ path: string; is_directory: boolean }>, isSearching: boolean) => void;
@@ -265,7 +265,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       pendingApprovals: [],
       subagents: {},
       artifacts: {},
-      changedFiles: {},
+      // Preserve changedFiles across runs so diffs remain visible
       toolLogs: {},
     }));
   },

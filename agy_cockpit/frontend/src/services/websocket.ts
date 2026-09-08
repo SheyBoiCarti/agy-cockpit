@@ -251,6 +251,7 @@ class WebSocketService {
           modified: event.payload.modified_content,
           language: event.payload.language,
           is_binary: event.payload.is_binary,
+          truncated: event.payload.truncated,
         });
         break;
 
