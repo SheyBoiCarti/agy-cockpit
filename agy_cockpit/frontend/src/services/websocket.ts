@@ -80,6 +80,7 @@ class WebSocketService {
       this.sendCommand('resume_run_stream', {
         conversation_id: store.activeConversationId,
         run_id: store.activeRunId,
+        last_seen_sequence: store.lastSequence,
         after_sequence: store.lastSequence,
       });
     } else if (store.activeConversationId) {

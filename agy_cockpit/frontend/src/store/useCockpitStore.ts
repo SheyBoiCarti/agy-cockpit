@@ -102,19 +102,19 @@ interface CockpitState {
 export const useCockpitStore = create<CockpitState>((set) => ({
   connectionState: 'disconnected',
   connectionError: null,
-  lastSequence: 0,
+  lastSequence: typeof window !== 'undefined' ? parseInt(sessionStorage.getItem('agy_last_seen_sequence') || '0', 10) || 0 : 0,
 
   workspaces: {},
   activeWorkspaceId: null,
 
   conversations: {},
-  activeConversationId: null,
+  activeConversationId: typeof window !== 'undefined' ? sessionStorage.getItem('agy_active_conversation_id') || null : null,
 
   messages: {},
   conversationMessageIds: {},
 
   runs: {},
-  activeRunId: null,
+  activeRunId: typeof window !== 'undefined' ? sessionStorage.getItem('agy_active_run_id') || null : null,
 
   reasoning: '',
   streamingOutput: '',
@@ -146,7 +146,13 @@ export const useCockpitStore = create<CockpitState>((set) => ({
     set({ connectionState, connectionError: error }),
 
   setLastSequence: (lastSequence) =>
-    set((state) => ({ lastSequence: Math.max(state.lastSequence, lastSequence) })),
+    set((state) => {
+      const nextSeq = Math.max(state.lastSequence, lastSequence);
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('agy_last_seen_sequence', String(nextSeq));
+      }
+      return { lastSequence: nextSeq };
+    }),
 
   setWorkspaces: (workspaces) =>
     set({
@@ -162,24 +168,37 @@ export const useCockpitStore = create<CockpitState>((set) => ({
     }),
 
   addConversation: (conversation) =>
-    set((state) => ({
-      conversations: { ...state.conversations, [conversation.id]: conversation },
-      activeConversationId: conversation.id,
-      conversationMessageIds: {
-        ...state.conversationMessageIds,
-        [conversation.id]: state.conversationMessageIds[conversation.id] || [],
-      },
-    })),
+    set((state) => {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('agy_active_conversation_id', conversation.id);
+      }
+      return {
+        conversations: { ...state.conversations, [conversation.id]: conversation },
+        activeConversationId: conversation.id,
+        conversationMessageIds: {
+          ...state.conversationMessageIds,
+          [conversation.id]: state.conversationMessageIds[conversation.id] || [],
+        },
+      };
+    }),
 
-  setActiveConversationId: (id) =>
-    set({
+  setActiveConversationId: (id) => {
+    if (typeof window !== 'undefined') {
+      if (id) {
+        sessionStorage.setItem('agy_active_conversation_id', id);
+      } else {
+        sessionStorage.removeItem('agy_active_conversation_id');
+      }
+    }
+    return set({
       activeConversationId: id,
       reasoning: '',
       streamingOutput: '',
       activeTools: {},
       pendingApproval: null,
       activeRunId: null,
-    }),
+    });
+  },
 
   updateConversation: (id, partial) =>
     set((state) => {
@@ -227,8 +246,11 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       };
     }),
 
-  startRun: (run) =>
-    set((state) => ({
+  startRun: (run) => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('agy_active_run_id', run.id);
+    }
+    return set((state) => ({
       runs: { ...state.runs, [run.id]: run },
       activeRunId: run.id,
       reasoning: '',
@@ -239,7 +261,8 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       artifacts: {},
       changedFiles: {},
       toolLogs: {},
-    })),
+    }));
+  },
 
   appendReasoning: (delta, sequence) =>
     set((state) => ({
@@ -373,6 +396,10 @@ export const useCockpitStore = create<CockpitState>((set) => ({
             [state.activeConversationId]: [...currentIds, asstMsgId],
           };
         }
+      }
+
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('agy_active_run_id');
       }
 
       return {
