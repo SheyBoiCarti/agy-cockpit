@@ -128,6 +128,10 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
             if summary and on_tool_log:
                 await on_tool_log(tool_id, summary, not success)
             await on_tool_finish(tool_id, tool_name, success, summary)
+            if tool_name in ("start_subagent", "invoke_subagent", "define_subagent") and on_subagent_update:
+                sa_id = f"subagent-{tool_id}"
+                st = "completed" if success else "failed"
+                await on_subagent_update(sa_id, None, "Subagent", st, summary, 1)
             active_tools.pop(tool_id, None)
 
         @agy.hooks.on_tool_error
@@ -203,6 +207,12 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                             call_id = call.id or "call"
                             active_tools[call_id] = call.name
                             await on_tool_start(call_id, call.name, call.args)
+                            if call.name in ("start_subagent", "invoke_subagent", "define_subagent") and on_subagent_update:
+                                args = call.args or {}
+                                role = args.get("Role") or args.get("role") or "Subagent"
+                                task = args.get("Prompt") or args.get("task") or args.get("description") or f"Executing {call.name}"
+                                sa_id = f"subagent-{call_id}"
+                                await on_subagent_update(sa_id, None, role, "running", task, 1)
                     except Exception:
                         pass
 
@@ -216,6 +226,8 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                     cancel_watcher.cancel()
                     for t_id, t_name in list(active_tools.items()):
                         await on_tool_finish(t_id, t_name, True, "Completed")
+                        if t_name in ("start_subagent", "invoke_subagent", "define_subagent") and on_subagent_update:
+                            await on_subagent_update(f"subagent-{t_id}", None, "Subagent", "completed", "Completed", 1)
                     active_tools.clear()
 
                 if cancellation_token.is_set():
