@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCockpitStore } from '../store/useCockpitStore';
 import { MarkdownView } from './MarkdownView';
@@ -26,6 +26,19 @@ export const ChatTimeline: React.FC = () => {
   const activeTools = useCockpitStore((s) => s.activeTools);
 
   const isStreaming = Boolean(activeRunId);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!activeRunId || !activeRun?.started_at) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const start = new Date(activeRun.started_at).getTime();
+    const interval = setInterval(() => {
+      setElapsedSeconds(Math.max(0, (Date.now() - start) / 1000));
+    }, 150);
+    return () => clearInterval(interval);
+  }, [activeRunId, activeRun?.started_at]);
 
   const messages = messageIds.map((id) => messagesMap[id]).filter(Boolean);
 
@@ -178,15 +191,24 @@ export const ChatTimeline: React.FC = () => {
 
             {/* Streamed Assistant Content */}
             {streamingOutput ? (
-              <MarkdownView content={streamingOutput} />
+              <div className="relative">
+                <MarkdownView content={streamingOutput} />
+                {isStreaming && (
+                  <span className="inline-block w-1.5 h-3.5 bg-indigo-400 animate-pulse ml-1 align-middle rounded-xs" />
+                )}
+              </div>
             ) : (
-              !reasoning &&
-              Object.keys(activeTools).length === 0 && (
-                <div className="flex items-center space-x-2 text-xs text-neutral-400 py-1">
-                  <div className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-                  <span>Antigravity is preparing response...</span>
+              <div className="flex items-center space-x-2 text-xs text-neutral-400 py-1">
+                <div className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
                 </div>
-              )
+                <span>
+                  {reasoning
+                    ? `Reasoning in progress (${elapsedSeconds.toFixed(1)}s)...`
+                    : `Deliberating with Gemini (${elapsedSeconds.toFixed(1)}s)...`}
+                </span>
+              </div>
             )}
 
             {/* Status Footer */}

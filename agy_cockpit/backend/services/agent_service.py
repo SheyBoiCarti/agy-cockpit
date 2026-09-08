@@ -361,6 +361,25 @@ class CLISubscriptionAdapter(AntigravityAdapter):
 
             cancel_task = asyncio.create_task(watch_cancel())
 
+            async def emit_streamed_tokens(chunk: str):
+                if not chunk:
+                    return
+                # If chunk is large (as from batch step_update in agy --print),
+                # stream words progressively so the frontend displays smooth real-time streaming!
+                if len(chunk) > 15 and " " in chunk:
+                    words = chunk.split(" ")
+                    for idx, w in enumerate(words):
+                        if cancellation_token.is_set():
+                            break
+                        delta = w + (" " if idx < len(words) - 1 else "")
+                        accumulated_tokens.append(delta)
+                        await on_token(delta)
+                        if len(words) > 1:
+                            await asyncio.sleep(0.012)
+                else:
+                    accumulated_tokens.append(chunk)
+                    await on_token(chunk)
+
             try:
                 while True:
                     line = await proc.stdout.readline()
@@ -384,8 +403,7 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                         # Text delta streaming
                         text_chunk = step.get("text_delta") or delta_obj.get("text") or step.get("text")
                         if text_chunk:
-                            accumulated_tokens.append(text_chunk)
-                            await on_token(text_chunk)
+                            await emit_streamed_tokens(text_chunk)
 
                         # Thinking delta streaming
                         thinking_chunk = delta_obj.get("thinking") or step.get("thinking")
@@ -404,8 +422,7 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                         if step_type == "agent_response":
                             delta = step.get("text_delta")
                             if delta and not text_chunk:
-                                accumulated_tokens.append(delta)
-                                await on_token(delta)
+                                await emit_streamed_tokens(delta)
                             usage = step.get("usage")
                             if usage and usage.get("thinking_tokens"):
                                 th = f"[Thinking: {usage.get('thinking_tokens')} tokens]\n"
@@ -491,6 +508,8 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                         else:
                             final_text = "".join(accumulated_tokens)
                             usage_data = None
+                        if not accumulated_tokens and final_text:
+                            await emit_streamed_tokens(final_text)
                         await proc.wait()
                         return TurnResult(
                             final_text=final_text,

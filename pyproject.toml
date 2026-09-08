@@ -30,6 +30,7 @@ dev = [
 
 [project.scripts]
 agy-cockpit = "agy_cockpit.cli:main"
+agy-council = "agy_cockpit.council.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agy_cockpit*"]
