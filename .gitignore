@@ -9,6 +9,7 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+tests/e2e/*playwright*
 
 # Test Artifacts & Coverage
 .pytest_cache/
