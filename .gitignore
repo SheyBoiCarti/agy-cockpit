@@ -1,4 +1,25 @@
-# Python
+# Documentation, Specs & Markdown
+docs/
+agy-cockpit-specs/
+*.md
+
+# Playwright & Browser Automation
+.playwright-mcp/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Test Artifacts & Coverage
+.pytest_cache/
+.pytest_tmp/
+.coverage
+.coverage.*
+htmlcov/
+*.coverage
+*.cover
+
+# Python & Virtual Environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -10,27 +31,51 @@ env/
 venv/
 *.log
 
-# Database and local data
+# Database, Cockpit Storage & Local Data
 *.db
 *.db-journal
+*.sqlite
+*.sqlite3
 .agy-cockpit/
 
-# Node / Frontend
+# Node & Frontend (including agy_cockpit/frontend)
 node_modules/
+**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 frontend/dist/
 frontend/.vite/
+agy_cockpit/frontend/dist/
+agy_cockpit/frontend/.vite/
+.eslintcache
 
-# IDE
-.idea/
-.vscode/
+# Environment Variables & Secrets
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.cert
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
 *.swp
 *.swo
+*~
 
-# Tests
-.pytest_cache/
-.coverage
-htmlcov/
+# IDE & Editor Configs
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Agent, MCP scratch directories & Backups
+.superpowers/
+.brain/
+*.bundle
+*.bak
+*.tmp
