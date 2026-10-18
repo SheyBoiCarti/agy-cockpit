@@ -155,11 +155,11 @@ def test_workspace_path_safety():
 
         # Safe relative path
         safe1 = resolve_safe_path(ws_root, "src/main.py")
-        assert safe1 == os.path.join(ws_root, "src/main.py")
+        assert safe1 == os.path.normpath(os.path.join(ws_root, "src/main.py"))
 
         # Safe absolute path inside workspace
         safe2 = resolve_safe_path(ws_root, os.path.join(ws_root, "docs/index.md"))
-        assert safe2 == os.path.join(ws_root, "docs/index.md")
+        assert safe2 == os.path.normpath(os.path.join(ws_root, "docs/index.md"))
 
         # Traversal attempt: ../
         with pytest.raises(WorkspaceSecurityError, match="outside workspace"):

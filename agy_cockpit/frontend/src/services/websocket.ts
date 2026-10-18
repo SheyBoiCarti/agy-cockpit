@@ -199,15 +199,16 @@ class WebSocketService {
         break;
 
       case 'reasoning_delta':
-        store.appendReasoning(event.payload.delta, event.sequence);
+        store.appendReasoning(event.conversation_id || '', event.payload.delta, event.sequence);
         break;
 
       case 'token_delta':
-        store.appendToken(event.payload.delta, event.sequence);
+        store.appendToken(event.conversation_id || '', event.payload.delta, event.sequence);
         break;
 
       case 'tool_started':
         store.toolStarted(
+          event.conversation_id || '',
           event.payload.tool_execution_id,
           event.payload.sdk_tool_name,
           event.payload.args,
@@ -225,6 +226,7 @@ class WebSocketService {
 
       case 'tool_finished':
         store.toolFinished(
+          event.conversation_id || '',
           event.payload.tool_execution_id,
           event.payload.success,
           event.payload.output_summary,
@@ -276,20 +278,25 @@ class WebSocketService {
         break;
 
       case 'artifact_created':
-      case 'artifact_updated':
-        store.artifactCreated({
-          id: event.payload.id || event.payload.artifact_id,
-          kind: event.payload.kind,
-          name: event.payload.name,
-          mime_type: event.payload.mime_type,
-          preview_supported: event.payload.preview_supported,
-          size_bytes: event.payload.size_bytes,
-        });
+      case 'artifact_updated': {
+        const artData = event.payload?.artifact || event.payload;
+        if (artData?.id || artData?.artifact_id) {
+          store.artifactCreated({
+            id: artData.id || artData.artifact_id,
+            kind: artData.kind,
+            name: artData.name,
+            mime_type: artData.mime_type,
+            preview_supported: artData.preview_supported,
+            size_bytes: artData.size_bytes,
+          });
+        }
         break;
+      }
 
       case 'run_completed':
         store.finalizeRun(
           event.payload.run_id,
+          event.conversation_id || '',
           'completed',
           event.payload.completed_at,
           undefined,
@@ -301,6 +308,7 @@ class WebSocketService {
       case 'run_cancelled':
         store.finalizeRun(
           event.payload.run_id,
+          event.conversation_id || '',
           'cancelled',
           event.payload.cancelled_at
         );
@@ -309,6 +317,7 @@ class WebSocketService {
       case 'run_failed':
         store.finalizeRun(
           event.payload.run_id,
+          event.conversation_id || '',
           'failed',
           event.payload.failed_at,
           event.payload.error_code,

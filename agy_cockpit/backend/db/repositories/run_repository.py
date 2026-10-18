@@ -110,9 +110,9 @@ class RunRepository:
         await self.conn.commit()
 
     async def interrupt_orphaned_runs(self) -> int:
-        """Transitions in-flight executing runs to INTERRUPTED on server reboot."""
+        """Transitions all non-terminal runs to INTERRUPTED on server reboot."""
         from agy_cockpit.backend.domain.models import utc_now_iso
-        active_executing_states = [RunState.QUEUED.value, RunState.THINKING.value, RunState.RUNNING_TOOL.value]
+        active_executing_states = [s.value for s in RunState if not s.is_terminal]
         placeholders = ",".join("?" for _ in active_executing_states)
         query = f"UPDATE runs SET state = ?, completed_at = COALESCE(completed_at, ?) WHERE state IN ({placeholders})"
         now = utc_now_iso()

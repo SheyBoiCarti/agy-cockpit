@@ -41,7 +41,12 @@ interface CockpitState {
   runs: Record<string, Run>;
   activeRunId: string | null;
 
-  // Live streaming / Active Run state
+  // Live streaming / Active Run state (Keyed by conversationId)
+  streamingOutputByConv: Record<string, string>;
+  reasoningByConv: Record<string, string>;
+  activeToolsByConv: Record<string, Record<string, ToolExecution>>;
+
+  // Backward compatibility
   reasoning: string;
   streamingOutput: string;
   activeTools: Record<string, ToolExecution>;
@@ -76,11 +81,11 @@ interface CockpitState {
   setMessages: (conversationId: string, messages: Message[]) => void;
   addMessage: (message: Message) => void;
   startRun: (run: Run) => void;
-  appendReasoning: (delta: string, sequence?: number) => void;
-  appendToken: (delta: string, sequence?: number) => void;
-  toolStarted: (toolId: string, name: string, args: Record<string, unknown>, sequence?: number) => void;
+  appendReasoning: (convId: string, delta: string, sequence?: number) => void;
+  appendToken: (convId: string, delta: string, sequence?: number) => void;
+  toolStarted: (convId: string, toolId: string, name: string, args: Record<string, unknown>, sequence?: number) => void;
   appendToolLog: (toolId: string, chunk: string, is_stderr?: boolean) => void;
-  toolFinished: (toolId: string, success: boolean, summary?: string, sequence?: number) => void;
+  toolFinished: (convId: string, toolId: string, success: boolean, summary?: string, sequence?: number) => void;
   setPendingApproval: (approval: ApprovalRequest | null) => void;
   dequeueApproval: (approvalId?: string) => void;
   fileChanged: (file: ChangedFile) => void;
@@ -88,7 +93,8 @@ interface CockpitState {
   artifactCreated: (artifact: Artifact) => void;
   finalizeRun: (
     runId: string,
-    state: RunState,
+    convId: string,
+    state: RunState | string,
     completedAt: string,
     errorCode?: string,
     errorMessage?: string,
@@ -119,6 +125,10 @@ export const useCockpitStore = create<CockpitState>((set) => ({
 
   runs: {},
   activeRunId: typeof window !== 'undefined' ? sessionStorage.getItem('agy_active_run_id') || null : null,
+
+  streamingOutputByConv: {},
+  reasoningByConv: {},
+  activeToolsByConv: {},
 
   reasoning: '',
   streamingOutput: '',
@@ -263,38 +273,58 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       sessionStorage.setItem('agy_active_run_id', run.id);
       sessionStorage.setItem('agy_last_seen_sequence', '0');
     }
-    return set((state) => ({
-      runs: { ...state.runs, [run.id]: run },
-      activeRunId: run.id,
-      lastSequence: 0,
-      reasoning: '',
-      streamingOutput: '',
-      activeTools: {},
-      pendingApproval: null,
-      pendingApprovals: [],
-      subagents: {},
-      artifacts: {},
-      // Preserve changedFiles across runs so diffs remain visible
-      toolLogs: {},
-    }));
+    return set((state) => {
+      const convId = run.conversation_id || state.activeConversationId || '';
+      return {
+        runs: { ...state.runs, [run.id]: run },
+        activeRunId: run.id,
+        lastSequence: 0,
+        streamingOutputByConv: { ...state.streamingOutputByConv, [convId]: '' },
+        reasoningByConv: { ...state.reasoningByConv, [convId]: '' },
+        activeToolsByConv: { ...state.activeToolsByConv, [convId]: {} },
+        reasoning: '',
+        streamingOutput: '',
+        activeTools: {},
+        pendingApproval: null,
+        pendingApprovals: [],
+        subagents: {},
+        artifacts: {},
+        // Preserve changedFiles across runs so diffs remain visible
+        toolLogs: {},
+      };
+    });
   },
 
-  appendReasoning: (delta, sequence) =>
-    set((state) => ({
-      reasoning: state.reasoning + delta,
-      lastSequence: sequence ? Math.max(state.lastSequence, sequence) : state.lastSequence,
-    })),
-
-  appendToken: (delta, sequence) =>
-    set((state) => ({
-      streamingOutput: state.streamingOutput + delta,
-      lastSequence: sequence ? Math.max(state.lastSequence, sequence) : state.lastSequence,
-    })),
-
-  toolStarted: (toolId, name, args, sequence) =>
+  appendReasoning: (convId, delta, sequence) =>
     set((state) => {
+      const targetConvId = convId || state.activeConversationId || '';
+      const prev = state.reasoningByConv[targetConvId] || '';
+      const next = prev + delta;
+      return {
+        reasoningByConv: { ...state.reasoningByConv, [targetConvId]: next },
+        reasoning: targetConvId === state.activeConversationId ? next : state.reasoning,
+        lastSequence: sequence ? Math.max(state.lastSequence, sequence) : state.lastSequence,
+      };
+    }),
+
+  appendToken: (convId, delta, sequence) =>
+    set((state) => {
+      const targetConvId = convId || state.activeConversationId || '';
+      const prev = state.streamingOutputByConv[targetConvId] || '';
+      const next = prev + delta;
+      return {
+        streamingOutputByConv: { ...state.streamingOutputByConv, [targetConvId]: next },
+        streamingOutput: targetConvId === state.activeConversationId ? next : state.streamingOutput,
+        lastSequence: sequence ? Math.max(state.lastSequence, sequence) : state.lastSequence,
+      };
+    }),
+
+  toolStarted: (convId, toolId, name, args, sequence) =>
+    set((state) => {
+      const targetConvId = convId || state.activeConversationId || '';
       const runId = state.activeRunId || 'run';
-      const existing = state.activeTools[toolId];
+      const convTools = state.activeToolsByConv[targetConvId] || {};
+      const existing = convTools[toolId] || state.activeTools[toolId];
       const tool: ToolExecution = {
         id: toolId,
         run_id: runId,
@@ -304,8 +334,10 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         started_at: new Date().toISOString(),
         logs: existing ? existing.logs : [],
       };
+      const nextConvTools = { ...convTools, [toolId]: tool };
       return {
-        activeTools: { ...state.activeTools, [toolId]: tool },
+        activeToolsByConv: { ...state.activeToolsByConv, [targetConvId]: nextConvTools },
+        activeTools: targetConvId === state.activeConversationId ? nextConvTools : state.activeTools,
         lastSequence: sequence ? Math.max(state.lastSequence, sequence) : state.lastSequence,
       };
     }),
@@ -320,21 +352,23 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       };
     }),
 
-  toolFinished: (toolId, success, summary, sequence) =>
+  toolFinished: (convId, toolId, success, summary, sequence) =>
     set((state) => {
-      const existing = state.activeTools[toolId];
+      const targetConvId = convId || state.activeConversationId || '';
+      const convTools = state.activeToolsByConv[targetConvId] || {};
+      const existing = convTools[toolId] || state.activeTools[toolId];
       if (!existing) return state;
+      const updatedTool: ToolExecution = {
+        ...existing,
+        state: success ? 'completed' : 'failed',
+        finished_at: new Date().toISOString(),
+        success,
+        output_summary: summary,
+      };
+      const nextConvTools = { ...convTools, [toolId]: updatedTool };
       return {
-        activeTools: {
-          ...state.activeTools,
-          [toolId]: {
-            ...existing,
-            state: success ? 'completed' : 'failed',
-            finished_at: new Date().toISOString(),
-            success,
-            output_summary: summary,
-          },
-        },
+        activeToolsByConv: { ...state.activeToolsByConv, [targetConvId]: nextConvTools },
+        activeTools: targetConvId === state.activeConversationId ? nextConvTools : state.activeTools,
         lastSequence: sequence ? Math.max(state.lastSequence, sequence) : state.lastSequence,
       };
     }),
@@ -384,13 +418,14 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       artifacts: { ...state.artifacts, [artifact.id]: artifact },
     })),
 
-  finalizeRun: (runId, runState, completedAt, errorCode, errorMessage, usage) =>
+  finalizeRun: (runId, convId, runState, completedAt, errorCode, errorMessage, usage) =>
     set((state) => {
       const existing = state.runs[runId];
+      const targetConvId = convId || existing?.conversation_id || state.activeConversationId || '';
       const updatedRun: Run = existing
         ? {
             ...existing,
-            state: runState,
+            state: runState as RunState,
             completed_at: completedAt,
             error_code: errorCode,
             error_message: errorMessage,
@@ -398,9 +433,9 @@ export const useCockpitStore = create<CockpitState>((set) => ({
           }
         : {
             id: runId,
-            conversation_id: state.activeConversationId || '',
+            conversation_id: targetConvId,
             user_message_id: '',
-            state: runState,
+            state: runState as RunState,
             started_at: completedAt,
             completed_at: completedAt,
             error_code: errorCode,
@@ -408,34 +443,38 @@ export const useCockpitStore = create<CockpitState>((set) => ({
             usage,
           };
 
+      const convOutput = state.streamingOutputByConv[targetConvId] ?? (targetConvId === state.activeConversationId ? state.streamingOutput : '');
+      const convReasoning = state.reasoningByConv[targetConvId] ?? (targetConvId === state.activeConversationId ? state.reasoning : '');
+      const convTools = state.activeToolsByConv[targetConvId] ?? (targetConvId === state.activeConversationId ? state.activeTools : {});
+
       // If output was streamed, reasoning captured, or tools invoked, persist an assistant message in state
       let updatedMessages = state.messages;
       let updatedConvMsgIds = state.conversationMessageIds;
       if (
-        (state.streamingOutput || Object.keys(state.activeTools).length > 0 || state.reasoning) &&
-        state.activeConversationId
+        (convOutput || Object.keys(convTools).length > 0 || convReasoning) &&
+        targetConvId
       ) {
         const asstMsgId = `asst-${runId}`;
         const content =
-          state.streamingOutput ||
+          convOutput ||
           (runState === 'failed' && errorMessage ? `Run failed: ${errorMessage}` : '');
         const asstMsg: Message = {
           id: asstMsgId,
-          conversation_id: state.activeConversationId,
+          conversation_id: targetConvId,
           role: 'assistant',
           author_time: completedAt,
           content,
           attachment_ids: [],
           run_id: runId,
-          reasoning: state.reasoning || undefined,
-          tools: Object.values(state.activeTools),
+          reasoning: convReasoning || undefined,
+          tools: Object.values(convTools),
         };
-        const currentIds = state.conversationMessageIds[state.activeConversationId] || [];
+        const currentIds = state.conversationMessageIds[targetConvId] || [];
         if (!currentIds.includes(asstMsgId)) {
           updatedMessages = { ...state.messages, [asstMsgId]: asstMsg };
           updatedConvMsgIds = {
             ...state.conversationMessageIds,
-            [state.activeConversationId]: [...currentIds, asstMsgId],
+            [targetConvId]: [...currentIds, asstMsgId],
           };
         }
       }

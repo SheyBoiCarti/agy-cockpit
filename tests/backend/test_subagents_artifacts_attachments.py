@@ -400,6 +400,7 @@ async def test_cli_subscription_adapter_stream_parsing():
     ).encode("utf-8")
 
     mock_proc = MagicMock()
+    mock_proc.returncode = 0
     mock_proc.stdout = asyncio.StreamReader()
     mock_proc.stdout.feed_data(ndjson_output)
     mock_proc.stdout.feed_eof()
@@ -871,6 +872,7 @@ async def test_cli_subscription_adapter_stream_parsing_subagents_and_logs():
     ]
 
     mock_proc = MagicMock()
+    mock_proc.returncode = 0
     mock_proc.stdout = asyncio.StreamReader()
     mock_proc.stdout.feed_data(("\n".join(ndjson_lines) + "\n").encode("utf-8"))
     mock_proc.stdout.feed_eof()
@@ -924,10 +926,38 @@ async def test_cli_subscription_adapter_stream_parsing_subagents_and_logs():
     assert tool_logs[0] == ("tool-1-invoke_subagent", "Audit passed clean.", False)
     assert tool_logs[1] == ("tool-2-run_command", "fatal: remote error", True)
 
-    # Tool finishes
     assert len(tool_finishes) == 2
     assert tool_finishes[0][2] is True
     assert tool_finishes[1][2] is False
+
+
+@pytest.mark.asyncio
+async def test_artifact_symlink_escape_rejection(tmp_path):
+    from agy_cockpit.backend.services.artifact_service import ArtifactService
+    from agy_cockpit.backend.domain.models import Artifact, ArtifactKind
+    from agy_cockpit.backend.domain.enums import WorkspaceSecurityError
+
+    ws_dir = tmp_path / "workspace"
+    ws_dir.mkdir()
+    secret_dir = tmp_path / "secret"
+    secret_dir.mkdir()
+    secret_file = secret_dir / "passwords.txt"
+    secret_file.write_text("SUPER_SECRET_KEY")
+
+    # Outside symlink or direct outside path
+    outside_art = Artifact(
+        id="art-outside",
+        run_id="run-1",
+        conversation_id="conv-1",
+        name="stolen",
+        kind=ArtifactKind.FILE,
+        path_or_storage_key=str(secret_file),
+    )
+
+    art_service = ArtifactService(conn=None, event_service=None)
+    with pytest.raises(WorkspaceSecurityError, match="outside workspace"):
+        art_service.read_artifact_content(outside_art, workspace_path=str(ws_dir))
+
 
 
 

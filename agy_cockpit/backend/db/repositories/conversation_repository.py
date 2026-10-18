@@ -37,7 +37,7 @@ class ConversationRepository:
             row = await cursor.fetchone()
             if not row:
                 return None
-            return Conversation(**dict(row))
+            return Conversation.model_construct(**dict(row))
 
     async def list_by_workspace(
         self, workspace_id: str, include_archived: bool = False
@@ -50,7 +50,7 @@ class ConversationRepository:
 
         async with self.conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
-            return [Conversation(**dict(r)) for r in rows]
+            return [Conversation.model_construct(**dict(r)) for r in rows]
 
     async def update_title(self, conv_id: str, title: str, updated_at: str) -> None:
         await self.conn.execute(

@@ -44,3 +44,21 @@ def test_models_endpoint():
             assert len(data["models"]) >= 2
             slugs = [m["slug"] for m in data["models"]]
             assert "gemini-3.8-flash-high" in slugs
+
+
+def test_security_headers_present():
+    from agy_cockpit.backend.app import create_app
+    from agy_cockpit.backend.config import AppConfig
+    from starlette.testclient import TestClient
+
+    cfg = AppConfig()
+    app = create_app(config=cfg)
+    with TestClient(app) as client:
+        resp = client.get("/")
+        assert resp.status_code == 200
+        csp = resp.headers.get("content-security-policy", "")
+        assert "default-src 'self'" in csp
+        assert "https://cdn.jsdelivr.net" not in csp
+        assert resp.headers.get("x-frame-options") == "DENY"
+        assert resp.headers.get("x-content-type-options") == "nosniff"
+

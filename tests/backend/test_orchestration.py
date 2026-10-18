@@ -389,3 +389,115 @@ def test_backend_restart_and_conversation_resumption(test_setup):
             assert len(messages) == 2
             assert messages[0]["content"] == "First message"
             assert messages[1]["content"] == "Hello from turn 1"
+
+
+@pytest.mark.asyncio
+async def test_cli_adapter_non_zero_exit_fails_run(tmp_path):
+    from agy_cockpit.backend.services.agent_service import CLISubscriptionAdapter
+    from agy_cockpit.backend.domain.enums import RunState
+    import sys
+
+    # Python script that writes to stderr and exits 1
+    script = tmp_path / "mock_fail.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stderr.write('Fatal crash in CLI\\n')\n"
+        "sys.exit(1)\n"
+    )
+
+    adapter = CLISubscriptionAdapter(agy_binary_path=sys.executable)
+    # Monkey-patch command generation to pass script
+    adapter._build_cmd = lambda *args, **kwargs: [sys.executable, str(script)]
+
+    result = await adapter.run_turn(
+        conversation_id="c1",
+        save_dir=str(tmp_path),
+        workspace_path=str(tmp_path),
+        prompt="hello",
+        model_slug="gemini-2.5-pro",
+        policy_preset="always-proceed",
+        approval_handler=None,
+        on_thought=lambda t: None,
+        on_token=lambda t: None,
+        on_tool_start=lambda *a: None,
+        on_tool_finish=lambda *a: None,
+        cancellation_token=asyncio.Event(),
+    )
+
+    assert result.state == RunState.FAILED
+    assert "Fatal crash in CLI" in (result.error_message or "")
+
+
+@pytest.fixture
+async def test_orchestration_setup(tmp_path):
+    import aiosqlite
+    from agy_cockpit.backend.db.connection import init_db
+    from agy_cockpit.backend.db.repositories.conversation_repository import ConversationRepository
+    from agy_cockpit.backend.db.repositories.run_repository import RunRepository
+    from agy_cockpit.backend.db.repositories.workspace_repository import WorkspaceRepository
+    from agy_cockpit.backend.services.event_service import EventService
+    from agy_cockpit.backend.services.approval_service import ApprovalService
+    from agy_cockpit.backend.services.run_service import RunService
+    from agy_cockpit.backend.domain.models import Workspace, Conversation
+
+    db_path = str(tmp_path / "test.db")
+    from agy_cockpit.backend.db.connection import init_db, get_db_connection
+    await init_db(db_path)
+    conn = await get_db_connection(db_path)
+
+    ws_dir = str(tmp_path / "workspace")
+    os.makedirs(ws_dir, exist_ok=True)
+    ws_repo = WorkspaceRepository(conn)
+    ws = Workspace(id="ws-1", canonical_path=ws_dir, display_name="test_ws")
+    await ws_repo.create(ws)
+
+    conv_repo = ConversationRepository(conn)
+    conv = Conversation.model_construct(id="c1", workspace_id=ws.id, title="Test Conv", model_slug="gemini-3.8-flash-high")
+    await conv_repo.create(conv)
+
+    run_repo = RunRepository(conn)
+    event_service = EventService(conn)
+    approval_service = ApprovalService(conn, event_service)
+    run_service = RunService(conn, event_service, approval_service)
+
+    yield run_service, conv_repo, run_repo
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_run_service_shutdown_cancels_active_runs(test_orchestration_setup):
+    run_service, conv_repo, run_repo = test_orchestration_setup
+    # Simulate a long-running turn
+    cancel_evt = asyncio.Event()
+    run_service._cancel_tokens["run-test-shutdown"] = cancel_evt
+
+    async def mock_task():
+        await cancel_evt.wait()
+
+    t = asyncio.create_task(mock_task())
+    run_service._active_tasks["run-test-shutdown"] = t
+
+    await run_service.shutdown(timeout=1.0)
+
+    assert cancel_evt.is_set()
+    assert t.done()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_prompts_race_condition(test_orchestration_setup):
+    run_service, conv_repo, run_repo = test_orchestration_setup
+    from agy_cockpit.backend.domain.enums import RunAlreadyActiveError
+
+    # Submit two prompts concurrently to the same conversation
+    task1 = asyncio.create_task(run_service.start_run("s1", "c1", "prompt 1"))
+    task2 = asyncio.create_task(run_service.start_run("s1", "c1", "prompt 2"))
+
+    results = await asyncio.gather(task1, task2, return_exceptions=True)
+    successes = [r for r in results if not isinstance(r, Exception)]
+    failures = [r for r in results if isinstance(r, RunAlreadyActiveError)]
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+
+
+

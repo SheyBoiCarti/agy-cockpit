@@ -54,7 +54,12 @@ def test_path_traversal_and_symlink_escape_rejection(hardening_env):
 
     # 2. Malicious symlink pointing outside workspace
     escape_symlink = os.path.join(ws_dir, "symlink_escape")
-    os.symlink(secret_file, escape_symlink)
+    try:
+        os.symlink(secret_file, escape_symlink)
+    except (OSError, NotImplementedError) as e:
+        if getattr(e, "winerror", None) == 1314 or isinstance(e, PermissionError):
+            pytest.skip("Symlink creation requires elevated privileges on Windows (winerror 1314)")
+        raise
 
     with pytest.raises(WorkspaceSecurityError):
         resolve_safe_path(ws_dir, "symlink_escape")

@@ -397,19 +397,22 @@ async def test_cli_adapter_tool_rejection_halts_process(tmp_path):
     """Verifies that rejecting a tool in CLISubscriptionAdapter sets cancellation and aborts immediately."""
     from agy_cockpit.backend.services.agent_service import CLISubscriptionAdapter
     from agy_cockpit.backend.domain.enums import RunState
+    import sys
     import tempfile
     import stat
 
     # Create a mock agy script that emits a tool ACTIVE step
-    mock_agy = tmp_path / "mock_agy.sh"
-    mock_agy.write_text(
-        "#!/bin/bash\n"
-        "echo '{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"tool\",\"tool_name\":\"run_command\",\"state\":\"ACTIVE\",\"tool_info\":{\"parameters\":{\"command\":\"echo dangerous\"}}}}'\n"
-        "sleep 5\n"
+    mock_script = tmp_path / "mock_agy.py"
+    mock_script.write_text(
+        "import sys, time\n"
+        "sys.stdout.write('{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"tool\",\"tool_name\":\"run_command\",\"state\":\"ACTIVE\",\"tool_info\":{\"parameters\":{\"command\":\"echo dangerous\"}}}}\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(5)\n"
     )
-    mock_agy.chmod(mock_agy.stat().st_mode | stat.S_IEXEC)
 
-    adapter = CLISubscriptionAdapter(agy_binary_path=str(mock_agy))
+    adapter = CLISubscriptionAdapter(agy_binary_path=sys.executable)
+    orig_build_cmd = adapter._build_cmd
+    adapter._build_cmd = lambda *args, **kwargs: [sys.executable, str(mock_script)]
     cancel_token = asyncio.Event()
 
     async def reject_handler(tc):

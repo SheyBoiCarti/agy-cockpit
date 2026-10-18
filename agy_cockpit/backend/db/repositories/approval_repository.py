@@ -64,9 +64,21 @@ class ApprovalRepository:
 
     async def resolve(
         self, req_id: str, decision: ApprovalDecision, resolved_at: str
-    ) -> None:
-        await self.conn.execute(
-            "UPDATE approval_requests SET decision = ?, resolved_at = ? WHERE id = ?",
+    ) -> bool:
+        """Atomically resolves an approval request if and only if it is currently pending."""
+        cursor = await self.conn.execute(
+            "UPDATE approval_requests SET decision = ?, resolved_at = ? WHERE id = ? AND decision IS NULL",
             (decision.value, resolved_at, req_id),
         )
         await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def expire_orphaned_approvals(self, resolved_at: str) -> int:
+        """Rejects any pending approval requests remaining from a crashed session."""
+        cursor = await self.conn.execute(
+            "UPDATE approval_requests SET decision = ?, resolved_at = ? WHERE decision IS NULL",
+            (ApprovalDecision.REJECTED.value, resolved_at),
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+

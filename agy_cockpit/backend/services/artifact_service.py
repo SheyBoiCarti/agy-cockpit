@@ -5,7 +5,7 @@ from typing import Optional, List, Any
 import aiosqlite
 
 from agy_cockpit.backend.db.repositories.artifact_repository import ArtifactRepository
-from agy_cockpit.backend.domain.enums import ArtifactKind
+from agy_cockpit.backend.domain.enums import ArtifactKind, WorkspaceSecurityError
 from agy_cockpit.backend.domain.models import Artifact, utc_now_iso
 
 KIND_TO_MIME = {
@@ -19,9 +19,9 @@ KIND_TO_MIME = {
 
 
 class ArtifactService:
-    def __init__(self, conn: aiosqlite.Connection, event_service: Any = None):
+    def __init__(self, conn: Optional[aiosqlite.Connection] = None, event_service: Any = None):
         self.conn = conn
-        self.repo = ArtifactRepository(conn)
+        self.repo = ArtifactRepository(conn) if conn is not None else None
         self.event_service = event_service
 
     async def register_artifact(
@@ -108,41 +108,72 @@ class ArtifactService:
     def read_artifact_content(
         self,
         artifact: Artifact,
+        workspace_path: Optional[str] = None,
         allowed_dirs: Optional[List[str]] = None,
     ) -> str:
-        """Reads content if file exists on disk and is within allowed directories, else returns stored path/key."""
-        path = os.path.abspath(artifact.path_or_storage_key)
-        if allowed_dirs:
-            is_allowed = any(
-                path == os.path.abspath(d) or path.startswith(os.path.abspath(d) + os.sep)
-                for d in allowed_dirs
-            )
-            if not is_allowed:
-                raise PermissionError(f"Access to path '{path}' is outside allowed directories.")
+        """Reads content if file exists on disk and is strictly confined within allowed directories or workspace root."""
+        raw_path = artifact.path_or_storage_key
 
-        if os.path.exists(path) and os.path.isfile(path):
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                return f.read(500_000)
-        return artifact.path_or_storage_key
+        # Resolve canonical absolute path eliminating symlinks
+        resolved_path = os.path.realpath(os.path.abspath(raw_path))
+
+        check_dirs = list(allowed_dirs or [])
+        if workspace_path:
+            check_dirs.append(workspace_path)
+
+        if not check_dirs:
+            raise WorkspaceSecurityError("Cannot read artifact: no workspace or allowed directory constraint provided")
+
+        resolved_check_dirs = [os.path.realpath(os.path.abspath(d)) for d in check_dirs]
+        is_confined = any(
+            os.path.commonpath([resolved_dir, resolved_path]) == resolved_dir
+            for resolved_dir in resolved_check_dirs
+        )
+
+        if not is_confined:
+            raise WorkspaceSecurityError(
+                f"Access to path '{raw_path}' is outside allowed directories or outside workspace confinement: resolves to '{resolved_path}'"
+            )
+
+        if not os.path.exists(resolved_path) or not os.path.isfile(resolved_path):
+            return raw_path
+
+        with open(resolved_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read(500_000)
 
     def read_artifact_bytes(
         self,
         artifact: Artifact,
+        workspace_path: Optional[str] = None,
         allowed_dirs: Optional[List[str]] = None,
         max_bytes: int = 10_000_000,
     ) -> bytes:
-        """Reads raw binary content if file exists on disk and is within allowed directories."""
-        path = os.path.abspath(artifact.path_or_storage_key)
-        if allowed_dirs:
-            is_allowed = any(
-                path == os.path.abspath(d) or path.startswith(os.path.abspath(d) + os.sep)
-                for d in allowed_dirs
-            )
-            if not is_allowed:
-                raise PermissionError(f"Access to path '{path}' is outside allowed directories.")
+        """Reads raw binary content if file exists on disk and is strictly confined within allowed directories or workspace root."""
+        raw_path = artifact.path_or_storage_key
 
-        if os.path.exists(path) and os.path.isfile(path):
-            with open(path, "rb") as f:
-                return f.read(max_bytes)
-        return artifact.path_or_storage_key.encode("utf-8")
+        resolved_path = os.path.realpath(os.path.abspath(raw_path))
+
+        check_dirs = list(allowed_dirs or [])
+        if workspace_path:
+            check_dirs.append(workspace_path)
+
+        if not check_dirs:
+            raise WorkspaceSecurityError("Cannot read artifact: no workspace or allowed directory constraint provided")
+
+        resolved_check_dirs = [os.path.realpath(os.path.abspath(d)) for d in check_dirs]
+        is_confined = any(
+            os.path.commonpath([resolved_dir, resolved_path]) == resolved_dir
+            for resolved_dir in resolved_check_dirs
+        )
+
+        if not is_confined:
+            raise WorkspaceSecurityError(
+                f"Access to path '{raw_path}' is outside allowed directories or outside workspace confinement: resolves to '{resolved_path}'"
+            )
+
+        if not os.path.exists(resolved_path) or not os.path.isfile(resolved_path):
+            return raw_path.encode("utf-8")
+
+        with open(resolved_path, "rb") as f:
+            return f.read(max_bytes)
 

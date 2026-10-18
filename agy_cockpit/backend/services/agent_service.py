@@ -293,6 +293,27 @@ class CLISubscriptionAdapter(AntigravityAdapter):
     def __init__(self, agy_binary_path: Optional[str] = None):
         self.agy_path = agy_binary_path or shutil.which("agy") or "agy"
 
+    def _build_cmd(
+        self,
+        conversation_id: str,
+        full_prompt: str,
+        workspace_path: str,
+        model_slug: str,
+        policy_preset: str,
+    ) -> List[str]:
+        cmd = [
+            self.agy_path,
+            "--conversation", conversation_id,
+            "--print", full_prompt,
+            "--output-format", "stream-json",
+            "--add-dir", workspace_path,
+        ]
+        if model_slug:
+            cmd.extend(["--model", model_slug])
+        if policy_preset == "always-proceed":
+            cmd.append("--dangerously-skip-permissions")
+        return cmd
+
     async def run_turn(
         self,
         conversation_id: str,
@@ -316,17 +337,13 @@ class CLISubscriptionAdapter(AntigravityAdapter):
             att_lines = "\n".join([f"- {p}" for p in attachments])
             full_prompt = f"{prompt}\n\nAttached files for context:\n{att_lines}"
 
-        cmd = [
-            self.agy_path,
-            "--conversation", conversation_id,
-            "--print", full_prompt,
-            "--output-format", "stream-json",
-            "--add-dir", workspace_path,
-        ]
-        if model_slug:
-            cmd.extend(["--model", model_slug])
-        if policy_preset == "always-proceed":
-            cmd.append("--dangerously-skip-permissions")
+        cmd = self._build_cmd(
+            conversation_id=conversation_id,
+            full_prompt=full_prompt,
+            workspace_path=workspace_path,
+            model_slug=model_slug,
+            policy_preset=policy_preset,
+        )
 
         logger.info(
             "Executing turn via Antigravity CLI subscription: conversation_id=%s, model=%s",
@@ -360,6 +377,24 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                         pass
 
             cancel_task = asyncio.create_task(watch_cancel())
+
+            stderr_chunks: List[str] = []
+
+            async def drain_stderr():
+                try:
+                    if proc and proc.stderr:
+                        while True:
+                            line = await proc.stderr.readline()
+                            if not line:
+                                break
+                            decoded = line.decode("utf-8", errors="replace")
+                            stderr_chunks.append(decoded)
+                            if len(stderr_chunks) > 100:
+                                stderr_chunks.pop(0)
+                except Exception:
+                    pass
+
+            stderr_task = asyncio.create_task(drain_stderr())
 
             async def emit_streamed_tokens(chunk: str):
                 if not chunk:
@@ -511,6 +546,17 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                         if not accumulated_tokens and final_text:
                             await emit_streamed_tokens(final_text)
                         await proc.wait()
+                        await stderr_task
+                        err_text = "".join(stderr_chunks).strip()
+                        if proc.returncode != 0:
+                            return TurnResult(
+                                final_text=final_text,
+                                reasoning_text="".join(accumulated_thoughts),
+                                state=RunState.FAILED,
+                                error_code="CLI_PROCESS_FAILED",
+                                error_message=err_text or f"CLI process exited with code {proc.returncode}",
+                                usage=usage_data,
+                            )
                         return TurnResult(
                             final_text=final_text,
                             reasoning_text="".join(accumulated_thoughts),
@@ -519,12 +565,25 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                         )
 
                 await proc.wait()
+                await stderr_task
+                err_text = "".join(stderr_chunks).strip()
+
                 if cancellation_token.is_set():
                     return TurnResult(
                         final_text="".join(accumulated_tokens),
                         reasoning_text="".join(accumulated_thoughts),
                         state=RunState.CANCELLED,
                     )
+
+                if proc.returncode != 0:
+                    return TurnResult(
+                        final_text="".join(accumulated_tokens),
+                        reasoning_text="".join(accumulated_thoughts),
+                        state=RunState.FAILED,
+                        error_code="CLI_PROCESS_FAILED",
+                        error_message=err_text or f"CLI process exited with code {proc.returncode}",
+                    )
+
                 return TurnResult(
                     final_text="".join(accumulated_tokens),
                     reasoning_text="".join(accumulated_thoughts),
@@ -532,8 +591,11 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                 )
             finally:
                 cancel_task.cancel()
+                if not stderr_task.done():
+                    stderr_task.cancel()
+                # Fail any tool that was left in ACTIVE state when the process stopped
                 for t_id, t_name in list(active_tools.items()):
-                    await on_tool_finish(t_id, t_name, True, "Completed")
+                    await on_tool_finish(t_id, t_name, False, "Process ended before tool completed")
                 active_tools.clear()
 
         except asyncio.CancelledError:

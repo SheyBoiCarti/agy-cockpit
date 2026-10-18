@@ -21,11 +21,18 @@ export const ChatTimeline: React.FC = () => {
 
   const activeRunId = useCockpitStore((s) => s.activeRunId);
   const activeRun = useCockpitStore((s) => (s.activeRunId ? s.runs[s.activeRunId] : null));
-  const reasoning = useCockpitStore((s) => s.reasoning);
-  const streamingOutput = useCockpitStore((s) => s.streamingOutput);
-  const activeTools = useCockpitStore((s) => s.activeTools);
+  const reasoning = useCockpitStore((s) =>
+    (s.activeConversationId && s.reasoningByConv[s.activeConversationId]) || (s.activeRunId && activeRun?.conversation_id === s.activeConversationId ? s.reasoning : '')
+  );
+  const streamingOutput = useCockpitStore((s) =>
+    (s.activeConversationId && s.streamingOutputByConv[s.activeConversationId]) || (s.activeRunId && activeRun?.conversation_id === s.activeConversationId ? s.streamingOutput : '')
+  );
+  const activeTools = useCockpitStore((s) =>
+    (s.activeConversationId && s.activeToolsByConv[s.activeConversationId]) || (s.activeRunId && activeRun?.conversation_id === s.activeConversationId ? s.activeTools : {})
+  );
 
-  const isStreaming = Boolean(activeRunId);
+  const isCurrentRunForThisConv = Boolean(activeRunId && activeRun?.conversation_id === activeConversationId);
+  const isStreaming = isCurrentRunForThisConv;
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   useEffect(() => {
@@ -168,7 +175,7 @@ export const ChatTimeline: React.FC = () => {
       )}
 
       {/* Active Streaming Turn */}
-      {activeRunId && (
+      {isCurrentRunForThisConv && (
         <div className="flex gap-3 max-w-4xl mx-auto justify-start">
           <div className="w-8 h-8 rounded-full bg-indigo-950 border border-indigo-700/50 flex items-center justify-center text-indigo-300 shrink-0 animate-pulse">
             <Bot className="w-4 h-4" />

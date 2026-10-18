@@ -260,10 +260,24 @@ async def test_reconnect_during_pending_approval_snapshot(temp_config):
     finally:
         await conn.close()
 
-    # Query snapshot via replay service
+    # Query snapshot via replay service without restarting the app
     app = create_app(temp_config)
     with TestClient(app) as client:
-        # Replay service can generate snapshot
+        # Re-set run and approval in DB to simulate active approval while server is running
+        conn2 = await get_db_connection(temp_config.db_path)
+        try:
+            await conn2.execute(
+                "UPDATE runs SET state = ? WHERE id = ?",
+                (RunState.WAITING_APPROVAL.value, run.id),
+            )
+            await conn2.execute(
+                "UPDATE approval_requests SET decision = NULL, resolved_at = NULL WHERE id = ?",
+                (appr.id,),
+            )
+            await conn2.commit()
+        finally:
+            await conn2.close()
+
         replay_service = app.state.replay_service
         snapshot = await replay_service.build_sync_state_payload(run.id)
         assert snapshot is not None

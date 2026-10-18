@@ -76,7 +76,8 @@ export const Composer: React.FC = () => {
       setAttachments([]);
     } else if (trimmed === '/help') {
       setText('');
-      setActiveDrawerTab('council');
+      wsService.sendPrompt('/help');
+      return;
     }
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -84,7 +85,7 @@ export const Composer: React.FC = () => {
   };
 
   const handleSend = () => {
-    const trimmed = text.trim();
+    let trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
     if (isRunning || !activeConversationId) return;
 
@@ -95,6 +96,10 @@ export const Composer: React.FC = () => {
         executeSlashCommand(match.command);
         return;
       }
+    }
+
+    if (!trimmed && attachments.length > 0) {
+      trimmed = "Analyze the attached file(s) and provide summary observations.";
     }
 
     const attachmentIds = attachments.map((a) => a.id);

@@ -43,6 +43,10 @@ class Workspace(BaseModel):
     created_at: str = Field(default_factory=utc_now_iso)
     last_opened_at: str = Field(default_factory=utc_now_iso)
 
+    @property
+    def path(self) -> str:
+        return self.canonical_path
+
 
 class Conversation(BaseModel):
     """A long-lived conversational session with an SDK agent."""
@@ -152,6 +156,7 @@ class Artifact(BaseModel):
     """An artifact produced during a run."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     run_id: str
+    conversation_id: Optional[str] = None
     kind: ArtifactKind = ArtifactKind.FILE
     name: str
     mime_type: str = "text/plain"

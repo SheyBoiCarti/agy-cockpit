@@ -90,12 +90,16 @@ async def test_orphaned_runs_cleanup_on_startup(remediation_setup):
         run_repo = RunRepository(conn)
 
         ws = await ws_repo.create(Workspace(canonical_path=ws_dir, display_name="TestWS"))
-        conv = await conv_repo.create(Conversation(id=str(uuid.uuid4()), workspace_id=ws.id, title="Recovery Conv"))
-        msg = await msg_repo.create(Message(conversation_id=conv.id, role=MessageRole.USER, content="Run task"))
+        conv1 = await conv_repo.create(Conversation(id=str(uuid.uuid4()), workspace_id=ws.id, title="Recovery Conv 1"))
+        conv2 = await conv_repo.create(Conversation(id=str(uuid.uuid4()), workspace_id=ws.id, title="Recovery Conv 2"))
+        conv3 = await conv_repo.create(Conversation(id=str(uuid.uuid4()), workspace_id=ws.id, title="Recovery Conv 3"))
+        msg1 = await msg_repo.create(Message(conversation_id=conv1.id, role=MessageRole.USER, content="Run task 1"))
+        msg2 = await msg_repo.create(Message(conversation_id=conv2.id, role=MessageRole.USER, content="Run task 2"))
+        msg3 = await msg_repo.create(Message(conversation_id=conv3.id, role=MessageRole.USER, content="Run task 3"))
 
-        run1 = await run_repo.create(Run(conversation_id=conv.id, user_message_id=msg.id, state=RunState.RUNNING_TOOL))
-        run2 = await run_repo.create(Run(conversation_id=conv.id, user_message_id=msg.id, state=RunState.THINKING))
-        run3 = await run_repo.create(Run(conversation_id=conv.id, user_message_id=msg.id, state=RunState.QUEUED))
+        run1 = await run_repo.create(Run(conversation_id=conv1.id, user_message_id=msg1.id, state=RunState.RUNNING_TOOL))
+        run2 = await run_repo.create(Run(conversation_id=conv2.id, user_message_id=msg2.id, state=RunState.THINKING))
+        run3 = await run_repo.create(Run(conversation_id=conv3.id, user_message_id=msg3.id, state=RunState.QUEUED))
     finally:
         await conn.close()
 
@@ -201,3 +205,42 @@ def test_diff_service_git_worktree_detection(remediation_setup):
 
     assert os.path.isfile(git_file)
     assert is_git_workspace(worktree_dir) is True
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_recovers_all_non_terminal_states(db_conn):
+    from agy_cockpit.backend.db.repositories.run_repository import RunRepository
+    from agy_cockpit.backend.domain.enums import RunState
+    from agy_cockpit.backend.domain.models import Run
+
+    from agy_cockpit.backend.db.repositories.workspace_repository import WorkspaceRepository
+    from agy_cockpit.backend.db.repositories.conversation_repository import ConversationRepository
+    from agy_cockpit.backend.db.repositories.message_repository import MessageRepository
+    from agy_cockpit.backend.domain.models import Workspace, Conversation, Message
+    from agy_cockpit.backend.domain.enums import MessageRole
+
+    ws = Workspace(id="ws1", canonical_path="/tmp/ws", display_name="ws")
+    await WorkspaceRepository(db_conn).create(ws)
+
+    repo = RunRepository(db_conn)
+    conv_repo = ConversationRepository(db_conn)
+    msg_repo = MessageRepository(db_conn)
+
+    states = [RunState.STREAMING, RunState.WAITING_APPROVAL, RunState.THINKING]
+    for idx, state in enumerate(states):
+        cid = f"c{idx+1}"
+        mid = f"m{idx+1}"
+        conv = Conversation.model_construct(id=cid, workspace_id="ws1", title=cid)
+        await conv_repo.create(conv)
+        msg = Message(id=mid, conversation_id=cid, role=MessageRole.USER, content="hi")
+        await msg_repo.create(msg)
+        r = Run(id=f"run-{state.value}", conversation_id=cid, user_message_id=mid, state=state)
+        await repo.create(r)
+
+    interrupted_count = await repo.interrupt_orphaned_runs()
+    assert interrupted_count >= 3
+
+    for state in states:
+        updated = await repo.get_by_id(f"run-{state.value}")
+        assert updated.state == RunState.INTERRUPTED
+

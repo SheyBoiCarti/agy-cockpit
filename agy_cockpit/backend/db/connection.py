@@ -58,5 +58,18 @@ async def init_db(db_path: Optional[str] = None) -> None:
             await conn.commit()
         except Exception:
             pass
+
+        # Ensure active run partial unique index exists
+        try:
+            await conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_active_run_per_conv
+                ON runs (conversation_id)
+                WHERE state NOT IN ('completed', 'cancelled', 'failed', 'interrupted');
+                """
+            )
+            await conn.commit()
+        except Exception:
+            pass
     finally:
         await conn.close()

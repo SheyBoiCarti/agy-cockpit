@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useCockpitStore } from '../store/useCockpitStore';
+import { loader, DiffEditor } from '@monaco-editor/react';
+import * as monaco from 'monaco-editor';
+
+// Configure @monaco-editor/react to use local bundled monaco instance rather than CDN
+loader.config({ monaco });
+
 import { wsService } from '../services/websocket';
-import { DiffEditor } from '@monaco-editor/react';
 import Convert from 'ansi-to-html';
 import { MarkdownView } from './MarkdownView';
 import { Artifact } from '../types/models';

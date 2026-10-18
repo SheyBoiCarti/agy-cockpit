@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 from typing import Any, Dict, List, Optional
 import aiosqlite
 
@@ -23,6 +24,7 @@ from agy_cockpit.backend.domain.enums import (
     ArtifactKind,
     FileChangeStatus,
     MessageRole,
+    RunAlreadyActiveError,
     RunState,
     SubagentState,
     ToolExecutionState,
@@ -49,10 +51,6 @@ from agy_cockpit.backend.services.event_service import EventService
 from agy_cockpit.backend.ws.protocol import ProtocolErrorCode
 
 logger = logging.getLogger(__name__)
-
-
-class RunAlreadyActiveError(Exception):
-    pass
 
 
 class ActiveRunContext:
@@ -91,10 +89,15 @@ class RunService:
         self.artifact_repo = ArtifactRepository(conn)
 
         self._active_runs: Dict[str, ActiveRunContext] = {}
+        self._active_tasks: Dict[str, asyncio.Task] = {}
+        self._cancel_tokens: Dict[str, asyncio.Event] = {}
         self._run_locks: Dict[str, asyncio.Lock] = {}
 
     def is_run_active(self, run_id: str) -> bool:
         return run_id in self._active_runs
+
+    async def get_run(self, run_id: str) -> Optional[Run]:
+        return await self.run_repo.get_by_id(run_id)
 
     async def start_prompt_run(
         self,
@@ -134,65 +137,69 @@ class RunService:
                     f"Conversation '{conversation_id}' already has an active run ({existing_run.id})."
                 )
 
-        # 4. Persist user message
-        now = utc_now_iso()
-        user_msg = Message(
-            conversation_id=conversation_id,
-            role=MessageRole.USER,
-            author_time=now,
-            content=prompt,
-            attachment_ids=attachment_ids or [],
-        )
-        await self.msg_repo.create(user_msg)
-
-        # 4. Create Run in QUEUED state
-        run = Run(
-            conversation_id=conversation_id,
-            user_message_id=user_msg.id,
-            state=RunState.QUEUED,
-            started_at=now,
-        )
-        await self.run_repo.create(run)
-
-        # 5. Emit run_started event
-        await self.event_service.emit_event(
-            event_type="run_started",
-            session_id=session_id,
-            payload={
-                "run_id": run.id,
-                "conversation_id": conversation_id,
-                "user_message_id": user_msg.id,
-                "started_at": run.started_at,
-            },
-            conversation_id=conversation_id,
-            run_id=run.id,
-            replayable=True,
-        )
-
-        # 6. Resolve attachment paths and launch execution task
-        attachment_paths: List[str] = []
-        if attachment_ids:
-            for att_id in attachment_ids:
-                att = await self.attachment_repo.get_by_id(att_id)
-                if att and att.storage_path and os.path.exists(att.storage_path):
-                    attachment_paths.append(att.storage_path)
-
-        cancel_token = asyncio.Event()
-        task = asyncio.create_task(
-            self._execute_turn(
-                session_id=session_id,
-                run=run,
-                conv=conv,
-                workspace_path=ws.canonical_path,
-                prompt=prompt,
-                model_slug=model_slug or conv.model_slug,
-                cancel_token=cancel_token,
-                attachments=attachment_paths,
+            # 4. Create user message and queued run INSIDE the lock
+            now = utc_now_iso()
+            user_msg = Message(
+                conversation_id=conversation_id,
+                role=MessageRole.USER,
+                author_time=now,
+                content=prompt,
+                attachment_ids=attachment_ids or [],
             )
-        )
+            await self.msg_repo.create(user_msg)
 
-        self._active_runs[run.id] = ActiveRunContext(run, task, cancel_token)
-        return run
+            run = Run(
+                conversation_id=conversation_id,
+                user_message_id=user_msg.id,
+                state=RunState.QUEUED,
+                started_at=now,
+            )
+            try:
+                await self.run_repo.create(run)
+            except sqlite3.IntegrityError:
+                raise RunAlreadyActiveError(f"Race condition detected: conversation '{conversation_id}' already has an active run.")
+
+            # 5. Emit run_started event
+            await self.event_service.emit_event(
+                event_type="run_started",
+                session_id=session_id,
+                payload={
+                    "run_id": run.id,
+                    "conversation_id": conversation_id,
+                    "user_message_id": user_msg.id,
+                    "started_at": run.started_at,
+                },
+                conversation_id=conversation_id,
+                run_id=run.id,
+                replayable=True,
+            )
+
+            # 6. Resolve attachment paths and launch execution task
+            attachment_paths: List[str] = []
+            if attachment_ids:
+                for att_id in attachment_ids:
+                    att = await self.attachment_repo.get_by_id(att_id)
+                    if att and att.storage_path and os.path.exists(att.storage_path):
+                        attachment_paths.append(att.storage_path)
+
+            cancel_token = asyncio.Event()
+            task = asyncio.create_task(
+                self._execute_turn(
+                    session_id=session_id,
+                    run=run,
+                    conv=conv,
+                    workspace_path=ws.canonical_path,
+                    prompt=prompt,
+                    model_slug=model_slug or conv.model_slug,
+                    cancel_token=cancel_token,
+                    attachments=attachment_paths,
+                )
+            )
+
+            self._active_runs[run.id] = ActiveRunContext(run, task, cancel_token)
+            self._active_tasks[run.id] = task
+            self._cancel_tokens[run.id] = cancel_token
+            return run
 
     async def _execute_turn(
         self,
@@ -370,6 +377,7 @@ class RunService:
                         art_kind = ArtifactKind.IMAGE if "image" in tool_name.lower() else ArtifactKind.FILE
                         art = Artifact(
                             run_id=run.id,
+                            conversation_id=conv.id,
                             kind=art_kind,
                             name=os.path.basename(clean_target),
                             mime_type="image/png" if art_kind == ArtifactKind.IMAGE else "text/plain",
@@ -623,6 +631,8 @@ class RunService:
             )
         finally:
             self._active_runs.pop(run.id, None)
+            self._active_tasks.pop(run.id, None)
+            self._cancel_tokens.pop(run.id, None)
 
     async def _transition_state(self, run: Run, new_state: RunState) -> None:
         try:
@@ -727,3 +737,25 @@ class RunService:
             )
             return True
         return False
+
+    async def shutdown(self, timeout: float = 3.0) -> None:
+        """Cancels all active runs and awaits task termination before closing storage."""
+        logger.info("Initiating RunService shutdown with %d active runs", len(self._active_tasks))
+        for run_id, cancel_evt in list(self._cancel_tokens.items()):
+            cancel_evt.set()
+
+        tasks = list(self._active_tasks.values())
+        if tasks:
+            done, pending = await asyncio.wait(tasks, timeout=timeout)
+            for p in pending:
+                p.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        self._active_tasks.clear()
+        self._cancel_tokens.clear()
+        self._active_runs.clear()
+        logger.info("RunService shutdown completed cleanly.")
+
+    # Alias for API compatibility
+    start_run = start_prompt_run
+

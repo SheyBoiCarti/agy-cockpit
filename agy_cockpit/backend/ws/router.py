@@ -376,15 +376,18 @@ class WebSocketRouter:
             return
 
         if not prompt or not prompt.strip():
-            err = create_protocol_error(
-                session_id=session.session_id,
-                error_code=ProtocolErrorCode.INVALID_MESSAGE,
-                message="Prompt text cannot be empty",
-                request_id=cmd.request_id,
-                conversation_id=conv_id,
-            )
-            await session.send_event(err)
-            return
+            if attachment_ids and len(attachment_ids) > 0:
+                prompt = "Analyze the attached file(s) and provide summary observations."
+            else:
+                err = create_protocol_error(
+                    session_id=session.session_id,
+                    error_code=ProtocolErrorCode.INVALID_MESSAGE,
+                    message="Prompt text cannot be empty",
+                    request_id=cmd.request_id,
+                    conversation_id=conv_id,
+                )
+                await session.send_event(err)
+                return
 
         try:
             run = await self.run_service.start_prompt_run(
@@ -672,7 +675,32 @@ class WebSocketRouter:
             await session.send_event(err)
             return
 
-        content = self.artifact_service.read_artifact_content(art)
+        conv_id = cmd.conversation_id or getattr(art, "conversation_id", None)
+        if not conv_id and art.run_id and self.run_service:
+            run = await self.run_service.get_run(art.run_id)
+            if run:
+                conv_id = run.conversation_id
+
+        conv = await self.conversation_service.get_conversation(conv_id) if (self.conversation_service and conv_id) else None
+        ws = await self.workspace_service.get_workspace(conv.workspace_id) if (conv and self.workspace_service) else None
+        ws_path = ws.path if ws else None
+
+        allowed_dirs = []
+        if self.workspace_service:
+            workspaces = await self.workspace_service.list_workspaces()
+            allowed_dirs = [w.path for w in workspaces]
+
+        try:
+            content = self.artifact_service.read_artifact_content(art, workspace_path=ws_path, allowed_dirs=allowed_dirs)
+        except Exception as e:
+            err = create_protocol_error(
+                session_id=session.session_id,
+                error_code=ProtocolErrorCode.WORKSPACE_NOT_ALLOWED,
+                message=str(e),
+                request_id=cmd.request_id,
+            )
+            await session.send_event(err)
+            return
         res_event = create_server_event(
             event_type="command_result",
             session_id=session.session_id,

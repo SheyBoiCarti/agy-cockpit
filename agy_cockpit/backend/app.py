@@ -27,6 +27,7 @@ from agy_cockpit.backend.services.model_catalog_service import ModelCatalogServi
 from agy_cockpit.backend.services.run_service import RunService
 from agy_cockpit.backend.services.settings_service import SettingsService
 from agy_cockpit.backend.services.workspace_service import WorkspaceService
+from agy_cockpit.backend.domain.enums import WorkspaceSecurityError
 from agy_cockpit.backend.ws.connection import ConnectionManager, ConnectionSecurityError
 from agy_cockpit.backend.ws.replay import ReplayService
 from agy_cockpit.backend.ws.router import WebSocketRouter
@@ -49,12 +50,20 @@ def create_app(
         db_conn = await get_db_connection(app_config.db_path)
         app.state.db_conn = db_conn
 
-        # Clean up any orphaned active runs from previous crashed/interrupted sessions
+        # Clean up any orphaned active runs and approvals from previous crashed/interrupted sessions
         from agy_cockpit.backend.db.repositories.run_repository import RunRepository
+        from agy_cockpit.backend.db.repositories.approval_repository import ApprovalRepository
+        from agy_cockpit.backend.domain.models import utc_now_iso
+
         startup_run_repo = RunRepository(db_conn)
         interrupted_count = await startup_run_repo.interrupt_orphaned_runs()
         if interrupted_count > 0:
             logger.info("Cleaned up %d orphaned active runs on startup.", interrupted_count)
+
+        startup_approval_repo = ApprovalRepository(db_conn)
+        expired_count = await startup_approval_repo.expire_orphaned_approvals(utc_now_iso())
+        if expired_count > 0:
+            logger.info("Cleaned up %d orphaned pending approvals on startup.", expired_count)
 
         # Services
         event_service = EventService(db_conn)
@@ -123,8 +132,9 @@ def create_app(
         logger.info("Antigravity Cockpit backend initialized.")
         yield
 
-        # Shutdown: cleanup
+        # Shutdown: cleanup active runs before database connection is terminated
         workspace_service.stop_all_watchers()
+        await run_service.shutdown()
         await db_conn.close()
         logger.info("Antigravity Cockpit backend shut down.")
 
@@ -141,6 +151,28 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        content_type = response.headers.get("content-type", "")
+        if "text/html" in content_type:
+            if "content-security-policy" not in response.headers:
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; "
+                    "script-src 'self' 'wasm-unsafe-eval'; "
+                    "style-src 'self' 'unsafe-inline'; "
+                    "img-src 'self' data: blob:; "
+                    "font-src 'self' data:; "
+                    "connect-src 'self' ws: wss:; "
+                    "frame-src 'self'; "
+                    "worker-src 'self' blob:;"
+                )
+            if "x-frame-options" not in response.headers:
+                response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
 
     async def verify_api_token(request: Request):
         if not app_config.token:
@@ -218,7 +250,7 @@ def create_app(
                 content = app.state.artifact_service.read_artifact_bytes(art, allowed_dirs=allowed_dirs)
             else:
                 content = app.state.artifact_service.read_artifact_content(art, allowed_dirs=allowed_dirs)
-        except PermissionError as pe:
+        except (PermissionError, WorkspaceSecurityError) as pe:
             raise HTTPException(status_code=403, detail=str(pe))
 
         headers = {

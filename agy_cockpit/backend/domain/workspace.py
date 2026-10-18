@@ -5,9 +5,7 @@ import pathlib
 from typing import Optional
 
 
-class WorkspaceSecurityError(Exception):
-    """Raised when a path violates workspace security boundaries."""
-    pass
+from agy_cockpit.backend.domain.enums import WorkspaceSecurityError
 
 
 def canonicalize_workspace_path(path_str: str) -> str:

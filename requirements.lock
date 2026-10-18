@@ -1,5 +1,4 @@
 absl-py==2.5.0
--e git+https://github.com/SheyBoiCarti/Antigravity.git@e1f20d6281c43fee3084591de9dc408fcbc9470a#egg=agy_cockpit
 aiosqlite==0.22.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
@@ -59,7 +58,7 @@ typing-inspection==0.4.4
 typing_extensions==4.16.0
 urllib3==2.7.0
 uvicorn==0.52.4
-uvloop==0.22.1
+uvloop==0.22.1; sys_platform != 'win32'
 watchfiles==1.2.0
 websockets==16.1.1
 wheel==0.48.0

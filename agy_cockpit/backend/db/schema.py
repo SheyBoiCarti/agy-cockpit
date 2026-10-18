@@ -158,4 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_file_changes_run ON file_changes(run_id);
 CREATE INDEX IF NOT EXISTS idx_subagents_run_parent ON subagents(run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifacts(run_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_conv ON attachments(conversation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_run_per_conv
+ON runs (conversation_id)
+WHERE state NOT IN ('completed', 'cancelled', 'failed', 'interrupted');
 """

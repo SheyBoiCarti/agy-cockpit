@@ -9,6 +9,16 @@ class DomainError(Exception):
     pass
 
 
+class WorkspaceSecurityError(DomainError):
+    """Raised when an operation violates workspace confinement."""
+    pass
+
+
+class RunAlreadyActiveError(DomainError):
+    """Raised when an active run already exists for a conversation."""
+    pass
+
+
 class InvalidStateTransitionError(DomainError):
     """Raised when an invalid state transition is attempted."""
     def __init__(self, from_state: "RunState", to_state: "RunState"):
