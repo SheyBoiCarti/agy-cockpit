@@ -36,3 +36,10 @@ The installed subscription CLI explicitly rejects NDJSON `control_response` with
 The user has been asked to choose read-only Council with subscription models, or the SDK approval bridge when API credentials are available. That question remains pending. No tool permissions have been automatically broadened to conceal the limitation. The full implementation goal remains active until this decision is resolved, implemented, and verified.
 
 The original launcher edits and exploratory screenshots were preserved. Verification data for the real app was stored outside the repository under the system temporary directory.
+
+## Follow-up checklist audit
+
+- Reproduced and repaired new-chat selection retaining the previous Council run's Stop button.
+- Six browser cases passed: all four members, stage-two chat switch/reconnect, and background-run control isolation. Blank questions and canceled dialogs submit nothing.
+- Seventeen runtime cases passed, including voting/stage cancellation, one-megabyte stderr draining, missing CLI failure, SDK anonymous approval rejection, descendant ownership, and unknown-member rejection before run creation.
+- The unsupported subscription CLI approval decision is still pending; the full goal is not complete.

@@ -89,7 +89,7 @@ async def test_council_vote_result_integrity():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('stage', ['STAGE 1', 'STAGE 2', 'STAGE 3'])
+@pytest.mark.parametrize('stage', ['STAGE 1', 'STAGE 2', 'STAGE 3', 'VOTE'])
 async def test_council_cancellation_prevents_later_stages(stage):
     from agy_cockpit.council.council import AICouncil
     started = asyncio.Event()
@@ -103,13 +103,28 @@ async def test_council_cancellation_prevents_later_stages(stage):
             raise asyncio.CancelledError()
         return 'Assessment'
     council = AICouncil(runner=runner)
-    task = asyncio.create_task(council.deliberate('Separate drafts', cancellation_token=cancel))
+    task = asyncio.create_task(council.vote('Separate drafts', cancellation_token=cancel) if stage == 'VOTE' else council.deliberate('Separate drafts', cancellation_token=cancel))
     await asyncio.wait_for(started.wait(), 3)
     cancel.set()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 5)
     if stage != 'STAGE 3':
         assert not any('STAGE 3' in prompt for prompt in calls)
+
+
+@pytest.mark.asyncio
+async def test_council_large_stderr_does_not_deadlock(monkeypatch):
+    fake_worker(monkeypatch, 'import sys,json; sys.stderr.write("x"*1048576); print(json.dumps({"event":"result","result":{"response":"A complete answer"}}))')
+    member = CouncilMember(ARCHITECT_PERSONA, member_timeout_seconds=5)
+    assert await member.chat('question') == 'A complete answer'
+
+
+@pytest.mark.asyncio
+async def test_missing_cli_never_fabricates_council_success(monkeypatch):
+    monkeypatch.delenv('COUNCIL_TEST_MODE', raising=False)
+    monkeypatch.setattr('shutil.which', lambda _: None)
+    with pytest.raises(Exception, match='CLI is missing'):
+        await CouncilMember(ARCHITECT_PERSONA).chat('question')
 
 
 @pytest.fixture
@@ -143,6 +158,14 @@ async def test_tool_ids_are_scoped_to_run(runtime_services):
     tools = [await service.tool_repo.list_by_run(run.id) for run in runs]
     assert len(tools[0]) == len(tools[1]) == 1
     assert tools[0][0].id != tools[1][0].id
+
+
+@pytest.mark.asyncio
+async def test_unknown_council_member_is_rejected_before_run(runtime_services):
+    service, _, _, conversation = runtime_services
+    with pytest.raises(ValueError, match='Unknown Council member'):
+        await service.start_prompt_run('session', conversation.id, 'question', council_action={'kind': 'ask', 'member_id': 'not-a-member'})
+    assert not service._active_runs
 
 
 @pytest.mark.asyncio
