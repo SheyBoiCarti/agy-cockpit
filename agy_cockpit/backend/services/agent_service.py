@@ -1,3 +1,5 @@
+from agy_cockpit.backend.services.process_utils import terminate_process_tree, spawn_owned_process
+from agy_cockpit.backend.services.tool_identity import ToolIdentityRegistry
 """Agent Service managing Google Antigravity SDK lifecycle and streaming."""
 
 import abc
@@ -118,11 +120,12 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
         api_key = os.environ.get("GEMINI_API_KEY", "")
 
         active_tools: Dict[str, str] = {}
+        tool_identity = ToolIdentityRegistry()
 
         @agy.hooks.post_tool_call
         async def on_post_tool(data: agy.types.ToolResult):
-            tool_id = data.id or data.step_id or "tool"
-            tool_name = data.name or active_tools.get(tool_id, "tool")
+            tool_name = data.name or active_tools.get(data.id or data.step_id, "tool")
+            tool_id = tool_identity.finish(data.id or data.step_id, tool_name)
             success = data.error is None and data.exception is None
             summary = str(data.result) if data.result is not None else (str(data.error) if data.error else None)
             if summary and on_tool_log:
@@ -136,8 +139,8 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
 
         @agy.hooks.on_tool_error
         async def on_tool_err(data: Any):
-            tool_id = getattr(data, "id", None) or "tool"
             tool_name = getattr(data, "name", "tool")
+            tool_id = tool_identity.finish(getattr(data, "id", None), tool_name)
             err_msg = str(getattr(data, "error", data))
             if on_tool_log:
                 await on_tool_log(tool_id, err_msg, True)
@@ -214,7 +217,7 @@ class RealSDKAntigravityAdapter(AntigravityAdapter):
                 async def consume_tools():
                     try:
                         async for call in response.tool_calls:
-                            call_id = call.id or "call"
+                            call_id = tool_identity.start(call.id, call.name)
                             active_tools[call_id] = call.name
                             await on_tool_start(call_id, call.name, call.args)
                             if call.name in ("start_subagent", "invoke_subagent", "define_subagent") and on_subagent_update:
@@ -358,21 +361,19 @@ class CLISubscriptionAdapter(AntigravityAdapter):
 
         proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_owned_process(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_path,
+                **({"start_new_session": True} if os.name != "nt" else {}),
             )
 
             async def watch_cancel():
                 await cancellation_token.wait()
                 if proc and proc.returncode is None:
                     try:
-                        proc.terminate()
-                        await asyncio.sleep(0.5)
-                        if proc.returncode is None:
-                            proc.kill()
+                        await terminate_process_tree(proc)
                     except Exception:
                         pass
 
@@ -590,9 +591,11 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                     state=RunState.COMPLETED,
                 )
             finally:
+                await terminate_process_tree(proc)
                 cancel_task.cancel()
                 if not stderr_task.done():
                     stderr_task.cancel()
+                await asyncio.gather(cancel_task, stderr_task, return_exceptions=True)
                 # Fail any tool that was left in ACTIVE state when the process stopped
                 for t_id, t_name in list(active_tools.items()):
                     await on_tool_finish(t_id, t_name, False, "Process ended before tool completed")

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useCockpitStore } from '../store/useCockpitStore';
+import { usePanelFocus } from './usePanelFocus';
 import { wsService } from '../services/websocket';
 import {
   FolderGit2,
@@ -19,6 +20,8 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
+  const isOpen = useCockpitStore(s => s.isSidebarOpen);
+  const panelRef = usePanelFocus(isOpen, '(max-width: 767px)', () => useCockpitStore.getState().setSidebarOpen(false));
   const workspaces = useCockpitStore((s) => s.workspaces);
   const activeWorkspaceId = useCockpitStore((s) => s.activeWorkspaceId);
   const conversationsMap = useCockpitStore((s) => s.conversations);
@@ -35,6 +38,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
   const conversations = Object.values(conversationsMap).filter((c) => !c.is_archived);
 
   const handleSelectConversation = (convId: string) => {
+    useCockpitStore.getState().setSidebarOpen(false);
     if (convId === activeConversationId) return;
     useCockpitStore.getState().setActiveConversationId(convId);
     wsService.sendCommand('open_conversation', { conversation_id: convId });
@@ -68,11 +72,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSettings }) => {
       canonical_path: newWorkspacePath.trim(),
     });
     setIsOpenWorkspaceModal(false);
-    setNewWorkspacePath('');
+
   };
 
   return (
-    <aside className="w-64 border-r border-neutral-800 bg-neutral-950 flex flex-col h-full select-none">
+    <aside ref={panelRef} tabIndex={-1} aria-label="Workspace navigation" className={`cockpit-sidebar ${isOpen ? "is-open" : ""} w-64 border-r border-neutral-800 bg-neutral-950 flex flex-col h-full select-none`}>
+      <button className="md:hidden p-3 text-right" aria-label="Close navigation" onClick={() => useCockpitStore.getState().setSidebarOpen(false)}>Close ×</button>
       {/* Workspace Header */}
       <div className="p-3 border-b border-neutral-800/80 bg-neutral-900/40">
         <div className="flex items-center justify-between">

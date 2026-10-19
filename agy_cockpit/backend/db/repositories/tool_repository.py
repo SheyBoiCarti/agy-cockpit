@@ -12,12 +12,18 @@ class ToolRepository:
         self.conn = conn
 
     async def create(self, tool: ToolExecution) -> ToolExecution:
-        await self.conn.execute(
+        existing = await self.get_by_id(tool.id)
+        if existing:
+            if (existing.run_id, existing.sdk_tool_name, existing.parsed_args) != (tool.run_id, tool.sdk_tool_name, tool.parsed_args):
+                raise ValueError('Conflicting tool identity for an existing invocation')
+            return existing
+        cursor = await self.conn.execute(
             """
             INSERT INTO tool_executions (
                 id, run_id, sdk_tool_name, args_json, state,
                 started_at, finished_at, success, output_summary
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
             """,
             (
                 tool.id,
@@ -32,6 +38,11 @@ class ToolRepository:
             ),
         )
         await self.conn.commit()
+        if cursor.rowcount == 0:
+            existing = await self.get_by_id(tool.id)
+            if not existing or (existing.run_id, existing.sdk_tool_name, existing.parsed_args) != (tool.run_id, tool.sdk_tool_name, tool.parsed_args):
+                raise ValueError('Conflicting tool identity for an existing invocation')
+            return existing
         return tool
 
     async def get_by_id(self, tool_id: str) -> Optional[ToolExecution]:
@@ -72,7 +83,7 @@ class ToolRepository:
             """
             UPDATE tool_executions
             SET state = ?, finished_at = ?, success = ?, output_summary = COALESCE(?, output_summary)
-            WHERE id = ?
+            WHERE id = ? AND finished_at IS NULL
             """,
             (state.value, finished_at, 1 if success else 0, output_summary, tool_id),
         )

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sqlite3
+import uuid
 from typing import Any, Dict, List, Optional
 import aiosqlite
 
@@ -106,6 +107,8 @@ class RunService:
         prompt: str,
         attachment_ids: Optional[List[str]] = None,
         model_slug: Optional[str] = None,
+        request_id: Optional[str] = None,
+        council_action: Optional[Dict[str, str]] = None,
     ) -> Run:
         """Initiates an execution turn for a prompt."""
         if conversation_id not in self._run_locks:
@@ -121,6 +124,15 @@ class RunService:
             if not ws:
                 raise ValueError(f"Workspace '{conv.workspace_id}' not found.")
 
+            if council_action:
+                from agy_cockpit.council.council import AICouncil
+                if council_action.get('kind') not in ('ask', 'vote', 'deliberate'):
+                    raise ValueError('Unknown Council action')
+                if not prompt.strip(): raise ValueError('A Council question or topic is required')
+                if council_action['kind'] == 'ask' and not AICouncil().get_member(council_action.get('member_id', '')):
+                    raise ValueError('Unknown Council member')
+            if prompt.strip() in ('/council', '/vote'):
+                raise ValueError('A Council topic or voting motion is required')
             # 2. Validate attachments if provided
             if attachment_ids:
                 for att_id in attachment_ids:
@@ -167,6 +179,7 @@ class RunService:
                     "run_id": run.id,
                     "conversation_id": conversation_id,
                     "user_message_id": user_msg.id,
+                    "request_id": request_id,
                     "started_at": run.started_at,
                 },
                 conversation_id=conversation_id,
@@ -192,6 +205,7 @@ class RunService:
                     prompt=prompt,
                     model_slug=model_slug or conv.model_slug,
                     cancel_token=cancel_token,
+                    council_action=council_action,
                     attachments=attachment_paths,
                 )
             )
@@ -211,10 +225,14 @@ class RunService:
         model_slug: str,
         cancel_token: asyncio.Event,
         attachments: Optional[List[str]] = None,
+        council_action: Optional[Dict[str, str]] = None,
     ) -> None:
         """Executes the agent turn and translates events."""
         settings = await self.settings_repo.get()
         policy_preset = settings.policy_preset
+
+        def scoped_tool_id(local_id):
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, f'{run.id}:{local_id}'))
 
         # Callbacks for streaming translation
         async def on_thought(thought_text: str):
@@ -242,6 +260,12 @@ class RunService:
             )
 
         async def on_tool_start(tool_id: str, tool_name: str, args: dict):
+            tool_id = scoped_tool_id(tool_id)
+            existing = await self.tool_repo.get_by_id(tool_id)
+            if existing:
+                if existing.sdk_tool_name != tool_name or existing.parsed_args != args:
+                    raise ValueError("Conflicting replayed tool invocation")
+                return
             if run.state != RunState.RUNNING_TOOL and not run.state.is_terminal:
                 await self._transition_state(run, RunState.RUNNING_TOOL)
 
@@ -253,7 +277,9 @@ class RunService:
                 state=ToolExecutionState.STARTED,
                 started_at=utc_now_iso(),
             )
-            await self.tool_repo.create(tool_rec)
+            persisted = await self.tool_repo.create(tool_rec)
+            if persisted is not tool_rec:
+                return
 
             # Pre-edit snapshot for diff tracking
             file_mutating_tools = (
@@ -284,6 +310,7 @@ class RunService:
             )
 
         async def on_tool_log(tool_id: str, chunk: str, is_stderr: bool = False):
+            tool_id = scoped_tool_id(tool_id)
             await self.event_service.emit_event(
                 event_type="tool_log",
                 session_id=session_id,
@@ -298,6 +325,9 @@ class RunService:
             )
 
         async def on_tool_finish(tool_id: str, tool_name: str, success: bool, summary: Optional[str]):
+            tool_id = scoped_tool_id(tool_id)
+            existing = await self.tool_repo.get_by_id(tool_id)
+            if existing and existing.finished_at: return
             await self.tool_repo.complete(
                 tool_id=tool_id,
                 state=ToolExecutionState.COMPLETED if success else ToolExecutionState.FAILED,
@@ -455,109 +485,63 @@ class RunService:
                 run_id=run.id,
                 sdk_tool_name=tool_call.name,
                 args=tool_call.args,
-                tool_execution_id=tool_call.id,
+                tool_execution_id=scoped_tool_id(tool_call.id) if getattr(tool_call, "id", None) else None,
                 conversation_id=conv.id,
             )
             return approved
 
         try:
-            if prompt.strip().startswith("/council") and not cancel_token.is_set():
+            command = prompt.strip().split(' ', 1)[0]
+            if council_action or command in ('/council', '/vote'):
                 from agy_cockpit.council.council import AICouncil
-                topic = prompt.strip()[8:].strip() or "General architectural review and design evaluation"
-                await on_thought(f"Convening AI Council for deliberation on: '{topic}'\n")
-
-                council = AICouncil(
-                    num_agents=3,
-                    model_slug=model_slug or conv.model_slug or "gemini-3.8-flash-high",
-                    workspace_path=workspace_path,
-                )
-
-                for m in council.members:
-                    await on_subagent_update(f"sa-{m.id}", None, f"{m.name} ({m.title})", "running", f"Analyzing: {topic[:35]}...", 1)
-                await on_subagent_update("sa-synthesizer", None, "Synthesizer (Council Chair)", "running", "Waiting for stage deliberations...", 1)
-
-                delib_result = await council.deliberate(topic=topic)
-
-                for m in council.members:
-                    await on_subagent_update(f"sa-{m.id}", None, f"{m.name} ({m.title})", "completed", "Deliberation complete", 1)
-                await on_subagent_update("sa-synthesizer", None, "Synthesizer (Council Chair)", "completed", "Consensus synthesized", 1)
-
-                formatted_parts = [
-                    f"## 🏛️ AI Council Deliberation: {topic}\n\n",
-                    "### Stage 1: Independent Perspectives\n",
-                ]
-                for p in delib_result.stage_1_perspectives:
-                    formatted_parts.append(f"#### {p.member_name} ({p.member_title})\n{p.content}\n\n")
-
-                formatted_parts.append("### Stage 2: Cross-Examination & Debate\n")
-                for c in delib_result.stage_2_critiques:
-                    formatted_parts.append(f"#### {c.member_name} (Peer Review)\n{c.content}\n\n")
-
-                formatted_parts.append("### Stage 3: Council Synthesis & Actionable Consensus\n")
-                formatted_parts.append(f"{delib_result.final_synthesis}\n")
-
-                full_output = "".join(formatted_parts)
-                words = full_output.split(" ")
-                for i, w in enumerate(words):
-                    if cancel_token.is_set():
-                        break
-                    piece = w + (" " if i < len(words) - 1 else "")
-                    await on_token(piece)
-                    if len(words) > 1:
-                        await asyncio.sleep(0.005)
-
-                result = TurnResult(
-                    final_text=full_output,
-                    reasoning_text=f"AI Council completed 3-stage deliberation with {council.num_agents} Gemini agents.",
-                    state=RunState.COMPLETED,
-                )
-            elif prompt.strip().startswith("/vote") and not cancel_token.is_set():
-                from agy_cockpit.council.council import AICouncil
-                motion = prompt.strip()[5:].strip() or "Standard quality proposal"
-                await on_thought(f"Convening AI Council for roll-call vote on motion: '{motion}'\n")
-
-                council = AICouncil(
-                    num_agents=3,
-                    model_slug=model_slug or conv.model_slug or "gemini-3.8-flash-high",
-                    workspace_path=workspace_path,
-                )
-                for m in council.members:
-                    await on_subagent_update(f"sa-{m.id}", None, f"{m.name} ({m.title})", "running", "Casting vote...", 1)
-
-                vote_res = await council.vote(motion)
-
-                for m in council.members:
-                    await on_subagent_update(f"sa-{m.id}", None, f"{m.name} ({m.title})", "completed", "Vote recorded", 1)
-
-                tally = vote_res["tally"]
-                outcome = vote_res["outcome"]
-                out_parts = [
-                    f"## 🗳️ AI Council Roll-Call Vote\n\n",
-                    f"**Motion:** {motion}\n\n",
-                    "### Individual Member Votes\n",
-                ]
-                for v in vote_res["votes"]:
-                    badge = "✅ **APPROVE**" if v["vote"] == "APPROVE" else "❌ **REJECT**" if v["vote"] == "REJECT" else "⚠️ **ABSTAIN**"
-                    out_parts.append(f"- **{v['member']}** ({v['title']}): {badge} — {v['rationale']}\n")
-
-                out_parts.append(f"\n### Result: **{outcome}**\n")
-                out_parts.append(f"**Tally:** {tally['APPROVE']} Approve | {tally['REJECT']} Reject | {tally['ABSTAIN']} Abstain\n")
-
-                full_output = "".join(out_parts)
-                words = full_output.split(" ")
-                for i, w in enumerate(words):
-                    if cancel_token.is_set():
-                        break
-                    piece = w + (" " if i < len(words) - 1 else "")
-                    await on_token(piece)
-                    if len(words) > 1:
-                        await asyncio.sleep(0.005)
-
-                result = TurnResult(
-                    final_text=full_output,
-                    reasoning_text=f"AI Council completed roll-call vote: {outcome} ({tally}).",
-                    state=RunState.COMPLETED,
-                )
+                from agy_cockpit.council.member import CouncilExecutionError, invoke
+                action = council_action or {'kind': 'deliberate' if command == '/council' else 'vote'}
+                topic = prompt if council_action else prompt.strip().split(' ', 1)[1].strip()
+                async def progress(stage, member_id, state, text_delta=None):
+                    await self.event_service.emit_event('council_progress', session_id,
+                        {'stage': stage, 'member_id': member_id, 'state': state, 'text_delta': text_delta},
+                        conversation_id=conv.id, run_id=run.id, replayable=True)
+                    await on_subagent_update(f'{run.id}:{member_id}', None, member_id, state, stage, 1)
+                async def member_runner(member, member_prompt, token_cb, thought_cb, cancellation):
+                    # Each member has its own SDK session; policies/approvals stay on this run.
+                    prefix = member.conversation_id + ':'
+                    async def tool_start(tool_id, name, args): await on_tool_start(prefix + tool_id, name, args)
+                    async def tool_finish(tool_id, name, success, summary): await on_tool_finish(prefix + tool_id, name, success, summary)
+                    async def tool_log(tool_id, chunk, is_stderr=False): await on_tool_log(prefix + tool_id, chunk, is_stderr)
+                    async def approve(tool):
+                        from types import SimpleNamespace
+                        return await approval_handler(SimpleNamespace(id=prefix + tool.id if getattr(tool, "id", None) else None, name=tool.name, args=tool.args))
+                    async def thought(text): await invoke(thought_cb, text)
+                    async def token(text): await invoke(token_cb, text)
+                    response = await self.adapter.run_turn(conversation_id=member.conversation_id,
+                        save_dir=os.path.join(conv.sdk_save_dir or workspace_path, 'council', run.id, member.id),
+                        workspace_path=workspace_path, prompt=member_prompt, model_slug=model_slug or conv.model_slug,
+                        policy_preset=policy_preset, approval_handler=approve, on_thought=thought, on_token=token,
+                        on_tool_start=tool_start, on_tool_finish=tool_finish, on_tool_log=tool_log,
+                        cancellation_token=cancellation, attachments=[])
+                    if cancellation.is_set() or response.state == RunState.CANCELLED: raise asyncio.CancelledError()
+                    if response.state != RunState.COMPLETED: raise CouncilExecutionError(member.id, response.error_message or 'worker failed')
+                    return response.final_text
+                council = AICouncil(num_agents=3, model_slug=model_slug or conv.model_slug,
+                    workspace_path=workspace_path, runner=member_runner, on_progress=progress)
+                await on_thought(f"Council {action['kind']} started.\n")
+                if action['kind'] == 'ask':
+                    response = await council.chat_member(action['member_id'], topic, cancellation_token=cancel_token)
+                    full_output = f'## {response.member_name}\n\n{response.content}'
+                elif action['kind'] == 'vote':
+                    vote = await council.vote(topic, cancellation_token=cancel_token)
+                    full_output = '## AI Council Roll-Call Vote\n\n' + '\n'.join(f"- **{v['member']}**: **{v['vote']}** — {v['rationale']}" for v in vote['votes'])
+                    full_output += f"\n\nResult: **{vote['outcome']}**\n\nTally: {vote['tally']['APPROVE']} Approve | {vote['tally']['REJECT']} Reject | {vote['tally']['ABSTAIN']} Abstain"
+                else:
+                    result = await council.deliberate(topic, cancellation_token=cancel_token)
+                    full_output = f'## AI Council Deliberation: {topic}\n\n### Stage 1: Independent Perspectives\n'
+                    full_output += '\n'.join(f'#### {r.member_name}\n{r.content}' for r in result.stage_1_perspectives)
+                    full_output += '\n\n### Stage 2: Cross-Examination & Debate\n'
+                    full_output += '\n'.join(f'#### {r.member_name}\n{r.content}' for r in result.stage_2_critiques)
+                    full_output += '\n\n### Stage 3: Council Synthesis & Actionable Consensus\n' + result.final_synthesis
+                if cancel_token.is_set(): raise asyncio.CancelledError()
+                await on_token(full_output)
+                result = TurnResult(final_text=full_output, reasoning_text='Council execution completed.', state=RunState.COMPLETED)
             else:
                 # Delegate to adapter
                 result = await self.adapter.run_turn(

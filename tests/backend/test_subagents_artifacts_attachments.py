@@ -417,7 +417,7 @@ async def test_cli_subscription_adapter_stream_parsing():
     async def async_tool_start(tid, name, args): tools_started.append((tid, name, args))
     async def noop(*args, **kwargs): return True
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+    with patch("agy_cockpit.backend.services.agent_service.spawn_owned_process", return_value=mock_proc):
         cancel_token = asyncio.Event()
         result = await adapter.run_turn(
             conversation_id="conv-1",
@@ -896,7 +896,7 @@ async def test_cli_subscription_adapter_stream_parsing_subagents_and_logs():
     async def on_token(tok): tokens.append(tok)
     async def noop(*args, **kwargs): return True
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+    with patch("agy_cockpit.backend.services.agent_service.spawn_owned_process", return_value=mock_proc):
         res = await adapter.run_turn(
             conversation_id="conv-1",
             save_dir="/tmp",

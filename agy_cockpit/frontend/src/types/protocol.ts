@@ -83,6 +83,7 @@ export type EventType =
   | 'approval_resolved'
   | 'file_changed'
   | 'file_diff_data'
+  | 'council_progress'
   | 'subagent_update'
   | 'artifact_created'
   | 'artifact_updated'
@@ -392,6 +393,8 @@ export interface RunFailedPayload {
 }
 
 export interface SyncStatePayload {
+  conversation_id?: string;
+  pending_approvals?: Array<{ id: string; sdk_tool_name: string; args: Record<string, unknown>; reason: string }>;
   run_id: string;
   state: string;
   reasoning: string;

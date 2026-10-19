@@ -7,6 +7,8 @@ import os
 import tempfile
 import uuid
 import pytest
+from unittest.mock import AsyncMock
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from agy_cockpit.backend.app import create_app
@@ -22,6 +24,55 @@ from agy_cockpit.backend.domain.enums import ArtifactKind, MessageRole, RunState
 from agy_cockpit.backend.domain.models import Conversation, Message, Run, Workspace
 from agy_cockpit.backend.services.diff_service import is_git_workspace
 from agy_cockpit.backend.ws.protocol import PROTOCOL_VERSION
+
+
+@pytest.mark.asyncio
+async def test_new_conversation_uses_saved_default_model():
+    from agy_cockpit.backend.ws.router import WebSocketRouter
+    from agy_cockpit.backend.ws.protocol import ClientCommand
+    conv = SimpleNamespace(id="conversation", model_dump=lambda: {"id": "conversation"})
+    service = SimpleNamespace(create_conversation=AsyncMock(return_value=conv))
+    settings = SimpleNamespace(get_settings=AsyncMock(return_value=SimpleNamespace(default_model="gemini-3.8-flash-low")))
+    router = WebSocketRouter(conversation_service=service, settings_service=settings)
+    session = SimpleNamespace(session_id="test", send_event=AsyncMock())
+    cmd = ClientCommand(type="create_conversation", request_id="test", session_id="test", payload={"workspace_id": "workspace"})
+    await router._handle_create_conversation(session, cmd)
+    assert service.create_conversation.call_args.kwargs["model_slug"] == "gemini-3.8-flash-low"
+
+
+@pytest.mark.asyncio
+async def test_tool_start_replay_is_idempotent(db_conn, tmp_path):
+    from agy_cockpit.backend.domain.models import ToolExecution
+    from agy_cockpit.backend.db.repositories.tool_repository import ToolRepository
+    from agy_cockpit.backend.domain.enums import ToolExecutionState
+    await WorkspaceRepository(db_conn).create(Workspace(id='tool-ws', canonical_path=str(tmp_path), display_name='workspace'))
+    await ConversationRepository(db_conn).create(Conversation(id='c' * 32, workspace_id='tool-ws', title='Test'))
+    await MessageRepository(db_conn).create(Message(id='tool-msg', conversation_id='c' * 32, role=MessageRole.USER, content='test'))
+    await RunRepository(db_conn).create(Run(id='tool-run', conversation_id='c' * 32, user_message_id='tool-msg', state=RunState.QUEUED))
+    tool = ToolExecution(id='sdk-tool', run_id='tool-run', sdk_tool_name='view_file', args_json='{}', state=ToolExecutionState.STARTED)
+    repo = ToolRepository(db_conn)
+    await repo.create(tool)
+    await asyncio.gather(repo.create(tool), repo.create(tool))
+    assert len(await repo.list_by_run('tool-run')) == 1
+
+
+def test_missing_tool_ids_do_not_collide():
+    from agy_cockpit.backend.services.tool_identity import ToolIdentityRegistry
+    registry = ToolIdentityRegistry()
+    first = registry.start(None, 'view_file')
+    assert registry.finish(None, 'view_file') == first
+    second = registry.start(None, 'view_file')
+    assert first != second
+    registry.start(None, 'view_file')
+    with pytest.raises(ValueError, match='safely'):
+        registry.finish(None, 'view_file')
+
+
+def test_archived_conversation_wire_flag_matches_persistence():
+    conversation = Conversation(workspace_id='workspace', title='Archived', archived_at='2026-10-19T00:00:00Z')
+    assert conversation.model_dump()['is_archived'] is True
+    conversation.archived_at = None
+    assert conversation.model_dump()['is_archived'] is False
 
 
 @pytest.fixture
