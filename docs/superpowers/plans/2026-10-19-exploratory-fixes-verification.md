@@ -59,3 +59,20 @@ Resume from the existing `fix/exploratory-qa` branch and implementation; do not 
 - Six browser cases passed: all four members, stage-two chat switch/reconnect, and background-run control isolation. Blank questions and canceled dialogs submit nothing.
 - Seventeen runtime cases passed, including voting/stage cancellation, one-megabyte stderr draining, missing CLI failure, SDK anonymous approval rejection, descendant ownership, and unknown-member rejection before run creation.
 - The unsupported subscription CLI approval decision is still pending; the full goal is not complete.
+
+## Live Council approval test — 2026-10-19
+
+Playwright Chromium drove the built app against an isolated real server using `CLISubscriptionAdapter`, the installed `agy.exe`, the account's `gemini-3.8-flash-low`, and Council Ask Architect. No mock adapter or model discovery override was used; `COUNCIL_TEST_MODE` was removed from the server environment. Each request instructed the member to replace `ORIGINAL` with `CHANGED` in one disposable workspace file. The harness watched the file independently, recorded WebSocket events, left each approval unanswered for five seconds, then operated the actual UI. Application source and the user's workspace files were not modified by these Council requests.
+
+| Policy / decision | Observed file behavior | Run outcome |
+| --- | --- | --- |
+| Strict / Reject | Changed at 12.117 seconds while the earlier `view_file` approval was unanswered | One `run_cancelled`; file remained changed |
+| Review Sensitive / Reject | Changed at 13.324 seconds; already changed when `replace_file_content` approval appeared | One `run_cancelled`; file remained changed |
+| Review Sensitive / Stop | Changed at 12.845 seconds, before approving the edit | One `run_cancelled`, about 83 ms after the Stop action completed; file remained changed |
+| Review Sensitive / Approve | Changed at 10.028 seconds; approval clicked at 15.175 seconds | One `run_completed`; edit happened before approval |
+
+**Finding:** Pre-execution approval enforcement fails on the tested subscription runtime. The approval handler blocks the app's event reader, but the CLI continues executing tools. Rejecting or stopping the run does not roll back the already-performed edit. The positive Approve case confirms the tool executed, but fails the requirement that editing wait for approval.
+
+**Additional UI finding:** The approval overlay covers Stop and has no Cancel Run action. The harness confirmed pointer obstruction and activated the existing Stop through keyboard focus and Enter. Add a Cancel Run button within the modal and test ordinary pointer and keyboard cancellation while approval is pending.
+
+Evidence is retained under `C:\Users\sheha\AppData\Local\Temp\council-policy-probe-bfaff5b310fc4320bac84aa8bf8acce9`: the root `results.json` contains Strict/Reject; `review-sensitive/results.json` contains default-policy Reject; `cancel-approve/results.json` contains Stop and Approve. Each folder includes its executable `probe.py`, server log, disposable workspace, and approval/final screenshots. The final two-case run exited successfully; its browser page-error log is in `cancel-approve/console.json`. Earlier harness attempts exposed startup timing, Windows console encoding, and a locator matching a hidden dialog textarea; these were corrected before completing the cases. The goal remains blocked on the execution-mode decision; these results replace the earlier uncertainty about whether the real CLI actually bypasses approval.
