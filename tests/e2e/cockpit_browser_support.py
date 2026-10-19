@@ -63,7 +63,8 @@ if __name__ == '__main__':
             if 'reconnect-test' in kwargs['prompt']:
                 await kwargs['on_token']('partial answer ')
             tools = [{'id': 'approval-tool', 'name': 'create_file', 'args': {'file_path': 'approval-probe.txt'}, 'requires_approval': True}] if 'approval-test' in kwargs['prompt'] else []
-            adapter = MockAntigravityAdapter(tokens=['APPROVE Isolation is useful.'] if 'ROLL-CALL VOTE' in kwargs['prompt'] else ['Completed response.'], tools=tools, wait_for_cancel='wait-for-cancel' in kwargs['prompt'])
+            hold = 'wait-for-cancel' in kwargs['prompt'] or ('stage2-hold' in kwargs['prompt'] and 'STAGE 2' in kwargs['prompt'])
+            adapter = MockAntigravityAdapter(tokens=['APPROVE Isolation is useful.'] if 'ROLL-CALL VOTE' in kwargs['prompt'] else ['Completed response.'], tools=tools, wait_for_cancel=hold)
             return await adapter.run_turn(**kwargs)
     port = int(sys.argv[1])
     config = AppConfig(port=port, data_dir=sys.argv[2], token='browser-regression', allowed_origins=[f'http://127.0.0.1:{port}'])

@@ -129,18 +129,27 @@ async def test_settings_modal_uses_current_values(cockpit_page):
     await expect(page.get_by_label('Default model', exact=True)).to_have_value('gemini-3.8-flash-low')
 
 
-async def test_council_member_question_routing(cockpit_page):
+@pytest.mark.parametrize('member', ['Architect', 'Security', 'Pragmatist', 'Synthesizer'])
+async def test_council_member_question_routing(cockpit_page, member):
     page = cockpit_page
     await page.get_by_role('button', name='Open AI Council Swarm Panel').click()
     await expect(page.get_by_text('3 Council members + 1 synthesis chair')).to_be_visible()
-    await page.get_by_role('button', name='Ask Architect', exact=True).click()
+    await page.get_by_role('button', name=f'Ask {member}', exact=True).click()
+    await expect(page.get_by_role('button', name='Start Council', exact=True)).to_be_disabled()
+    await page.get_by_role('textbox', name='Council question or topic').fill('   ')
+    await expect(page.get_by_role('button', name='Start Council', exact=True)).to_be_disabled()
+    await page.get_by_role('button', name='Cancel', exact=True).click()
+    await expect(page.get_by_role('button', name='Stop', exact=True)).to_have_count(0)
+    await page.get_by_role('button', name=f'Ask {member}', exact=True).click()
     await page.get_by_role('textbox', name='Council question or topic').fill('What is a session boundary?')
     await page.get_by_role('button', name='Start Council', exact=True).click()
     await expect(page.get_by_role('button', name='Stop', exact=True)).to_have_count(0, timeout=10000)
-    await expect(page.locator('main')).to_contain_text('Architect')
+    await expect(page.locator('main')).to_contain_text(member)
     await expect(page.locator('main')).to_contain_text('Completed response.')
-    await expect(page.get_by_text('ask · architect · completed')).to_be_visible()
-    await expect(page.get_by_text('ask · security · completed')).to_have_count(0)
+    await expect(page.get_by_text(f'ask · {member.lower()} · completed')).to_be_visible()
+    for other in ['architect', 'security', 'pragmatist', 'synthesizer']:
+        if other != member.lower():
+            await expect(page.get_by_text(f'ask · {other} · completed')).to_have_count(0)
 
 
 async def test_council_deliberation_vote_and_cancel(cockpit_page):
@@ -292,3 +301,24 @@ async def test_recovery_missing_conversation(cockpit_page, archived):
     await page.reload()
     await expect(page.get_by_role('button', name='New Conversation', exact=True)).to_be_enabled()
     await expect(page.get_by_role('heading', name='No Conversation Selected', exact=True)).to_be_visible()
+
+
+async def test_switch_and_reconnect_during_council_critique(cockpit_page):
+    page = cockpit_page
+    await rename(page, 'Council A')
+    await page.get_by_role('button', name='Open AI Council Swarm Panel').click()
+    await page.get_by_role('button', name='Deliberate', exact=True).click()
+    await page.get_by_role('textbox', name='Council question or topic').fill('stage2-hold: discuss isolated drafts')
+    await page.get_by_role('button', name='Start Council', exact=True).click()
+    await expect(page.get_by_text('critique · architect · running')).to_be_visible(timeout=10000)
+    await page.get_by_role('button', name='New Conversation', exact=True).click()
+    await expect(page.locator('header h2')).to_have_text('New Conversation')
+    await expect(page.get_by_role('button', name='Stop', exact=True)).to_have_count(0)
+    await page.locator('aside').first.get_by_text('Council A', exact=True).click()
+    await expect(page.get_by_role('button', name='Stop', exact=True)).to_be_visible()
+    await page.evaluate('window.__qaSockets.at(-1).close()')
+    await page.wait_for_function('() => window.__qaSockets.at(-1)?.readyState === 1')
+    await expect(page.get_by_text('critique · architect · running')).to_be_visible(timeout=10000)
+    await expect(page.get_by_text('analysis · architect · completed')).to_have_count(1)
+    await page.get_by_role('button', name='Stop', exact=True).click()
+    await expect(page.get_by_role('button', name='Stop', exact=True)).to_have_count(0, timeout=5000)

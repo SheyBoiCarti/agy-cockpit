@@ -170,6 +170,9 @@ class WebSocketService {
       case 'conversation_created':
         if (event.payload?.conversation) {
           store.addConversation(event.payload.conversation);
+          // Creating a chat selects it, just like clicking an existing chat.
+          // Do not retain the previous conversation's Stop/approval controls.
+          store.setActiveConversationId(event.payload.conversation.id);
         }
         break;
 
