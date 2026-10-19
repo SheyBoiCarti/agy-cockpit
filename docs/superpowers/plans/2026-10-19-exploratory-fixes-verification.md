@@ -37,6 +37,22 @@ The user has been asked to choose read-only Council with subscription models, or
 
 The original launcher edits and exploratory screenshots were preserved. Verification data for the real app was stored outside the repository under the system temporary directory.
 
+## Blocked handoff — 2026-10-19
+
+**Goal status: blocked, not complete.** Implementation commits are `be90068` and `1ef808c`; `de62d4c` records the initial permission gate. Tasks 1–7 and 10 are complete. Tasks 8–9 remain partially complete, and final acceptance remains pending. This documentation update does not resume or complete the implementation goal.
+
+The blocker is the installed subscription CLI's missing permission-response transport. It rejects `control_response`, ignores the tested permission-response variants, and can initialize with `permission_mode: always-proceed`. Observing an ACTIVE tool and displaying an approval does not establish that execution waited for approval. The passing SDK rejection test uses a controlled SDK fixture; it does not verify approval enforcement by the real subscription CLI.
+
+Remaining work, in dependency order:
+
+- [ ] Resolve the execution mode: obtain the user's choice of read-only Council using subscription models, or the SDK approval bridge using configured API credentials. Read-only is a scope change and must enforce restrictions before execution; prompting members to avoid writes is insufficient. SDK mode needs verified credentials and compatible models; subscription access alone does not establish API access. A future CLI with a verified permission-response bridge is another route to the original requirement.
+- [ ] Complete Task 8 policy enforcement in the selected adapter/runtime. Verify that rejecting a modifying tool prevents its side effect, and canceling while approval is pending ends the run and all owned workers. Record the actual runtime request/response shape. Never autoapprove or treat observed tool activity as proof of enforcement.
+- [ ] Close the remaining Task 9 implementation checkbox after its Task 8 dependency is satisfied. Question routing, roster, progress, failure reporting, and cancellation are already implemented; retain their regressions while integrating the selected policy mode.
+- [ ] Rerun Council runtime and browser regressions, then exercise the selected real runtime with temporary data: Ask, vote, full deliberation, rejection, and cancellation while awaiting approval. Verify one terminal event, no rejected modification, and no surviving owned workers. Rerun the plan's final build/backend/browser gates after code changes.
+- [ ] Reconcile all ten acceptance requirements, review the final diff, update this evidence with actual results and remaining limitations, and only then mark the goal complete. For an approved read-only scope change, update the acceptance requirement explicitly before evaluating it.
+
+Resume from the existing `fix/exploratory-qa` branch and implementation; do not repeat completed work or overwrite the preserved launcher edits and screenshots. No application tests were rerun for this documentation-only handoff; the results above are the previously recorded implementation evidence.
+
 ## Follow-up checklist audit
 
 - Reproduced and repaired new-chat selection retaining the previous Council run's Stop button.
