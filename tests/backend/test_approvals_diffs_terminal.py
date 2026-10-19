@@ -393,8 +393,8 @@ def test_tool_log_streaming_chunks(phase6_setup):
 
 
 @pytest.mark.asyncio
-async def test_cli_adapter_tool_rejection_halts_process(tmp_path):
-    """Verifies that rejecting a tool in CLISubscriptionAdapter sets cancellation and aborts immediately."""
+async def test_cli_adapter_without_native_hook_fails_closed(tmp_path):
+    """ACTIVE telemetry must never be mistaken for a pre-execution approval."""
     from agy_cockpit.backend.services.agent_service import CLISubscriptionAdapter
     from agy_cockpit.backend.domain.enums import RunState
     import sys
@@ -436,9 +436,8 @@ async def test_cli_adapter_tool_rejection_halts_process(tmp_path):
         cancellation_token=cancel_token,
     )
 
-    assert result.state == RunState.CANCELLED
-    assert cancel_token.is_set()
-    assert "rejected" in result.final_text.lower()
+    assert result.state == RunState.FAILED
+    assert 'permission hook did not initialize' in result.error_message
 
 
 @pytest.mark.asyncio

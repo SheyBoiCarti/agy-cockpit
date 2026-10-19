@@ -95,6 +95,12 @@ export const ApprovalModal: React.FC = () => {
         {/* Action Buttons */}
         <div className="flex items-center justify-end space-x-3 pt-2">
           <button
+            onClick={() => wsService.sendCommand('cancel_run', { run_id: pendingApproval.run_id })}
+            className="mr-auto px-4 py-2 rounded-xl border border-neutral-700 text-xs text-neutral-300 hover:bg-neutral-800 cursor-pointer"
+          >
+            Cancel Run
+          </button>
+          <button
             onClick={() => handleDecision('rejected')}
             className="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-neutral-800 text-neutral-300 hover:bg-rose-950 hover:text-rose-300 border border-neutral-700 hover:border-rose-700 text-xs font-medium transition-colors cursor-pointer"
           >

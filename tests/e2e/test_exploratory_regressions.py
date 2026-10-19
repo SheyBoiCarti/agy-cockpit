@@ -199,6 +199,24 @@ async def test_recovery_clears_finished_offline_run(cockpit_page):
     await expect(page.get_by_role('button', name='Send', exact=True)).to_be_enabled()
 
 
+@pytest.mark.parametrize('keyboard', [False, True])
+async def test_cancel_run_from_pending_approval(cockpit_page, keyboard):
+    page = cockpit_page
+    await page.locator('textarea').fill('approval-test')
+    await page.get_by_role('button', name='Send', exact=True).click()
+    await expect(page.get_by_role('button', name='Reject', exact=True)).to_be_visible()
+    cancel = page.get_by_role('button', name='Cancel Run', exact=True)
+    if keyboard:
+        await cancel.focus()
+        await page.keyboard.press('Enter')
+    else:
+        await cancel.click(timeout=3000)
+    await expect(page.get_by_role('button', name='Reject', exact=True)).to_have_count(0)
+    await expect(page.get_by_role('button', name='Stop', exact=True)).to_have_count(0)
+    await page.locator('textarea').fill('Next request after cancelling approval')
+    await expect(page.get_by_role('button', name='Send', exact=True)).to_be_enabled()
+
+
 async def test_background_run_events_preserve_selected_controls(cockpit_page):
     page = cockpit_page
     first = await page.evaluate("sessionStorage.getItem('agy_active_conversation_id')")
