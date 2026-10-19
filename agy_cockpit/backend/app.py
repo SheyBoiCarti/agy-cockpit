@@ -110,6 +110,7 @@ def create_app(
             diff_service=diff_service,
             attachment_service=attachment_service,
             artifact_service=artifact_service,
+            model_catalog=model_catalog,
         )
 
         # Wire event service broadcast to connection manager
@@ -192,8 +193,17 @@ def create_app(
         return {"status": "ok", "service": "agy-cockpit", "version": "0.1.0"}
 
     @app.get("/api/models")
-    async def list_models(_: bool = Depends(verify_api_token)):
-        return {"models": app.state.model_catalog.list_models()}
+    async def list_models(refresh: bool = False, _: bool = Depends(verify_api_token)):
+        return await app.state.model_catalog.list_models(force_refresh=refresh)
+
+    @app.get("/api/council")
+    async def council_roster(_: bool = Depends(verify_api_token)):
+        from agy_cockpit.council.council import AICouncil
+        council = AICouncil(num_agents=3)
+        def describe(member):
+            return {"id": member.id, "name": member.name, "title": member.title,
+                    "focus": member.persona.system_prompt[:160], "icon": member.persona.icon}
+        return {"members": [describe(m) for m in council.members], "chair": describe(council.chair)}
 
     @app.post("/api/attachments")
     async def upload_attachment(

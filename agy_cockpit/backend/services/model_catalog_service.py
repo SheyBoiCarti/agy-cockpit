@@ -1,65 +1,80 @@
-"""Model catalog service for machine slug and display label management."""
-
+"""Discover account models without presenting guessed access as authoritative."""
+import asyncio
+import logging
+import re
 import shutil
-import subprocess
-from typing import Dict, List
+import time
+from datetime import datetime, timezone
 
-
-DEFAULT_MODELS: List[Dict[str, str]] = [
-    {"slug": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)", "is_default": True},
-    {"slug": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)", "is_default": False},
-    {"slug": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)", "is_default": False},
-    {"slug": "gemini-3.7-flash-high", "label": "Gemini 3.7 Flash (High)", "is_default": False},
-    {"slug": "gemini-3.7-flash-medium", "label": "Gemini 3.7 Flash (Medium)", "is_default": False},
-    {"slug": "gemini-3.1-pro-high", "label": "Gemini 3.1 Pro (High)", "is_default": False},
-    {"slug": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (Thinking)", "is_default": False},
-]
+logger = logging.getLogger(__name__)
 
 
 class ModelCatalogService:
-    """Provides model slug discovery and validation."""
+    discovery_timeout = 15
+    success_ttl = 300
+    failure_retry = 30
 
     def __init__(self):
-        self._cached_models: List[Dict[str, str]] = list(DEFAULT_MODELS)
+        self._models = []
+        self._last_success = None
+        self._error = None
+        self._expires = 0.0
+        self._generation = 0
+        self._lock = asyncio.Lock()
 
-    def list_models(self) -> List[Dict[str, str]]:
-        """Returns the list of available models."""
-        # Try dynamic discovery via agy CLI if available and not cached
-        agy_path = shutil.which("agy")
-        if agy_path:
+    def _result(self):
+        return {"models": [dict(m) for m in self._models],
+                "status": "stale" if self._error and self._models else "unavailable" if self._error else "ready",
+                "error": self._error, "last_success_at": self._last_success}
+
+    async def list_models(self, *, force_refresh=False):
+        generation = self._generation
+        if not force_refresh and time.monotonic() < self._expires:
+            return self._result()
+        async with self._lock:
+            if generation != self._generation or (not force_refresh and time.monotonic() < self._expires):
+                return self._result()
             try:
-                res = subprocess.run(
-                    [agy_path, "models"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2.0,
-                )
-                if res.returncode == 0 and res.stdout:
-                    discovered = []
-                    for line in res.stdout.strip().splitlines():
-                        parts = line.strip().split(None, 1)
-                        if len(parts) == 2:
-                            slug, label = parts[0].strip(), parts[1].strip()
-                            if slug and not slug.startswith("⠋") and not slug.startswith("Fetching"):
-                                discovered.append({
-                                    "slug": slug,
-                                    "label": label,
-                                    "is_default": (slug == "gemini-3.8-flash-high"),
-                                })
-                    if discovered:
-                        self._cached_models = discovered
+                self._models = await self._discover()
+                self._last_success = datetime.now(timezone.utc).isoformat()
+                self._error = None
+                self._expires = time.monotonic() + self.success_ttl
             except Exception:
-                pass
+                logger.exception("Account model discovery failed")
+                self._error = "Could not discover account models. Check Antigravity login and retry Refresh models."
+                self._expires = time.monotonic() + self.failure_retry
+            self._generation += 1
+            return self._result()
 
-        return self._cached_models
+    async def _discover(self):
+        executable = shutil.which("agy")
+        if not executable:
+            raise RuntimeError("Antigravity CLI is not installed")
+        process = await asyncio.create_subprocess_exec(executable, "models", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), self.discovery_timeout)
+        except BaseException:
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+            raise
+        if process.returncode:
+            raise RuntimeError(f"Model discovery exited {process.returncode}: {stderr.decode(errors='replace')[:1000]}")
+        models = {}
+        output = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", stdout.decode("utf-8", errors="replace"))
+        for line in output.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9.]+)+", parts[0]):
+                slug, label = parts
+                models[slug] = {"slug": slug, "label": label, "is_default": slug == "gemini-3.8-flash-high"}
+        if not models:
+            raise ValueError("Model discovery returned no model rows")
+        return list(models.values())
 
-    def validate_model_slug(self, slug: str) -> str:
-        """Validates model slug, returning default if invalid or empty."""
-        if not slug or not slug.strip():
-            return "gemini-3.8-flash-high"
-        models = self.list_models()
-        slugs = {m["slug"] for m in models}
-        if slug in slugs:
-            return slug
-        # If slug is unrecognized, log warning and allow if it looks like a valid model name
+    async def validate_model_slug(self, slug):
+        result = await self.list_models()
+        if result["status"] != "ready":
+            raise ValueError(result["error"] or "Refresh models before starting a run")
+        if slug not in {m["slug"] for m in result["models"]}:
+            raise ValueError(f"Model '{slug}' is not available for this account. Select an available model.")
         return slug

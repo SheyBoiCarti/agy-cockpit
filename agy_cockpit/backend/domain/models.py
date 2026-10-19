@@ -6,7 +6,7 @@ import re
 from typing import Any, Dict, List, Optional
 import uuid
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, computed_field
 
 from agy_cockpit.backend.domain.enums import (
     ApprovalDecision,
@@ -58,6 +58,11 @@ class Conversation(BaseModel):
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
     archived_at: Optional[str] = None
+
+    @computed_field
+    @property
+    def is_archived(self) -> bool:
+        return self.archived_at is not None
 
     @field_validator("id")
     @classmethod

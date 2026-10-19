@@ -1,7 +1,13 @@
 import { PROTOCOL_VERSION, ClientCommand, ServerEvent } from '../types/protocol';
 import { useCockpitStore } from '../store/useCockpitStore';
 
+export interface CouncilAction { kind: 'ask' | 'vote' | 'deliberate'; member_id?: string }
+
 class WebSocketService {
+  private replayFloorByRun = new Map<string, number>();
+  private latestWorkspaceRequest: string | null = null;
+  private conversationRequests = new Map<string, string>();
+  private pendingPrompts = new Map<string, { conversationId: string; prompt: string; attachmentIds: string[]; draft: string }>();
   private ws: WebSocket | null = null;
   private sessionId: string;
   private token: string = '';
@@ -68,6 +74,7 @@ class WebSocketService {
 
     // Send Hello handshake
     this.sendCommand('hello', {});
+    this.sendCommand('list_workspaces', {});
 
     // Start ping interval
     if (this.pingInterval) clearInterval(this.pingInterval);
@@ -75,18 +82,8 @@ class WebSocketService {
       this.sendCommand('ping', {});
     }, 25000);
 
-    // If recovering an active run, send resume_run_stream
-    if (store.activeConversationId && store.activeRunId) {
-      this.sendCommand('resume_run_stream', {
-        conversation_id: store.activeConversationId,
-        run_id: store.activeRunId,
-        last_seen_sequence: store.lastSequence,
-        after_sequence: store.lastSequence,
-      });
-    } else if (store.activeConversationId) {
-      this.sendCommand('open_conversation', {
-        conversation_id: store.activeConversationId,
-      });
+    if (store.activeConversationId) {
+      this.sendCommand('open_conversation', { conversation_id: store.activeConversationId });
     } else {
       const params = new URLSearchParams(window.location.search);
       const initialWorkspace = params.get('workspace');
@@ -113,6 +110,7 @@ class WebSocketService {
     // Monotonic sequence check for replayable events per run
     if (typeof event.sequence === 'number') {
       const runKey = event.run_id || 'global';
+      if (event.sequence <= (this.replayFloorByRun.get(runKey) || 0)) return;
       let seqSet = this.processedSequencesByRun.get(runKey);
       if (!seqSet) {
         seqSet = new Set<number>();
@@ -143,12 +141,20 @@ class WebSocketService {
       case 'workspace_list':
         if (event.payload?.workspaces) {
           store.setWorkspaces(event.payload.workspaces);
+          const conversation = store.conversations[store.activeConversationId || ''];
+          if (conversation) {
+            store.setActiveWorkspaceId(conversation.workspace_id);
+            this.sendCommand('list_conversations', { workspace_id: conversation.workspace_id });
+          }
         }
         break;
 
       case 'workspace_opened':
         if (event.payload?.workspace) {
           const ws = event.payload.workspace;
+          if (event.payload.request_id && event.payload.request_id !== this.latestWorkspaceRequest) break;
+          const current = store.conversations[store.activeConversationId || ''];
+          if (current && current.workspace_id !== ws.id) store.setActiveConversationId(null);
           store.setWorkspaces([ws]);
           store.setActiveWorkspaceId(ws.id);
           this.sendCommand('list_conversations', { workspace_id: ws.id });
@@ -156,7 +162,7 @@ class WebSocketService {
         break;
 
       case 'conversation_list':
-        if (event.payload?.conversations) {
+        if (event.payload?.conversations && (!event.payload.workspace_id || event.payload.workspace_id === store.activeWorkspaceId)) {
           store.setConversations(event.payload.conversations);
         }
         break;
@@ -169,7 +175,14 @@ class WebSocketService {
 
       case 'conversation_snapshot':
         if (event.payload?.conversation) {
-          store.addConversation(event.payload.conversation);
+          const conversation = event.payload.conversation;
+          // A late snapshot must never select a chat the user has left.
+          if (conversation.id !== store.activeConversationId) break;
+          if (conversation.is_archived) { store.setActiveConversationId(null); this.sendCommand('open_workspace', { workspace_id: conversation.workspace_id }); break; }
+          if (event.payload.workspace) store.setWorkspaces([event.payload.workspace]);
+          if (event.payload.conversations) store.setConversations(event.payload.conversations);
+          store.addConversation(conversation);
+          store.setActiveWorkspaceId(conversation.workspace_id);
           if (event.payload.messages) {
             store.setMessages(event.payload.conversation.id, event.payload.messages);
           }
@@ -178,7 +191,17 @@ class WebSocketService {
           }
           if (event.payload.active_run) {
             store.startRun(event.payload.active_run);
-          }
+            const sync = event.payload.sync_state;
+            const runId = event.payload.active_run.id;
+            if (sync) {
+              store.applySyncState(sync);
+              this.replayFloorByRun.set(runId, sync.last_sequence);
+              this.processedSequencesByRun.delete(runId);
+              store.clearCouncilProgress(runId);
+              for (const progress of sync.council_events || []) store.updateCouncilProgress(runId, conversation.id, progress);
+            }
+            this.sendCommand('resume_run_stream', { conversation_id: conversation.id, run_id: runId, after_sequence: sync?.last_sequence || 0, last_seen_sequence: sync?.last_sequence || 0 });
+          } else store.clearConversationRun(conversation.id);
         }
         break;
 
@@ -188,7 +211,20 @@ class WebSocketService {
         }
         break;
 
-      case 'run_started':
+      case 'run_started': {
+        const requestId = event.payload.request_id;
+        const pending = this.pendingPrompts.get(requestId);
+        if (pending) {
+          store.addMessage({ id: event.payload.user_message_id, conversation_id: pending.conversationId, role: 'user', author_time: event.payload.started_at, content: pending.prompt, attachment_ids: pending.attachmentIds });
+          const draft = store.draftsByConversation[pending.conversationId];
+          if (draft && pending.draft) {
+            const submitted = JSON.parse(pending.draft);
+            if (draft.text === submitted.text) store.setDraftText(pending.conversationId, '');
+            for (const attachmentId of pending.attachmentIds) store.removeDraftAttachment(pending.conversationId, attachmentId);
+          }
+          store.setPendingSubmission(pending.conversationId, null);
+          this.pendingPrompts.delete(requestId);
+        }
         store.startRun({
           id: event.payload.run_id,
           conversation_id: event.payload.conversation_id,
@@ -198,6 +234,7 @@ class WebSocketService {
         });
         break;
 
+      }
       case 'reasoning_delta':
         store.appendReasoning(event.conversation_id || '', event.payload.delta, event.sequence);
         break;
@@ -266,7 +303,12 @@ class WebSocketService {
         });
         break;
 
+      case 'council_progress':
+        store.updateCouncilProgress(event.run_id || '', event.conversation_id || '', event.payload);
+        break;
+
       case 'subagent_update':
+        if (event.conversation_id && event.conversation_id !== store.activeConversationId) break;
         store.subagentUpdated({
           id: event.payload.id,
           parent_id: event.payload.parent_id,
@@ -348,6 +390,15 @@ class WebSocketService {
 
       case 'protocol_error':
         console.error('[WS Protocol Error]:', event.payload);
+        store.addNotice({ id: event.payload.request_id || event.event_id, message: event.payload.message || 'Request failed', conversationId: event.conversation_id });
+        const rejected = this.pendingPrompts.get(event.payload.request_id);
+        if (rejected) { store.setPendingSubmission(rejected.conversationId, null); this.pendingPrompts.delete(event.payload.request_id); }
+        if (event.payload?.error_code === 'CONVERSATION_NOT_FOUND' && this.conversationRequests.get(event.payload.request_id) === store.activeConversationId) {
+          store.setActiveConversationId(null);
+          sessionStorage.removeItem('agy_active_run_id');
+          const initialWorkspace = new URLSearchParams(location.search).get('workspace');
+          if (initialWorkspace) this.sendCommand('open_workspace', { canonical_path: initialWorkspace });
+        }
         if (event.payload?.error_code === 'UNAUTHORIZED') {
           store.setConnectionState('error', 'Unauthorized: Invalid token');
         }
@@ -362,6 +413,8 @@ class WebSocketService {
 
   private handleClose(event?: CloseEvent) {
     if (this.pingInterval) clearInterval(this.pingInterval);
+    for (const pending of this.pendingPrompts.values()) useCockpitStore.getState().setPendingSubmission(pending.conversationId, null);
+    this.pendingPrompts.clear();
     const store = useCockpitStore.getState();
     if (event && event.code === 1008) {
       store.setConnectionState('error', event.reason || 'Unauthorized or Origin rejected');
@@ -392,10 +445,10 @@ class WebSocketService {
     payload: T,
     conversationId?: string,
     runId?: string
-  ) {
+  ): string | null {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('[WS] Cannot send command: socket not open');
-      return;
+      useCockpitStore.getState().addNotice({ id: crypto.randomUUID(), message: 'Disconnected. Reconnect before retrying this action.' });
+      return null;
     }
 
     const store = useCockpitStore.getState();
@@ -409,29 +462,22 @@ class WebSocketService {
       payload,
     };
 
+    if (type === 'open_workspace') this.latestWorkspaceRequest = cmd.request_id;
+    if (type === 'open_conversation') { this.conversationRequests.set(cmd.request_id, (payload as { conversation_id: string }).conversation_id); if (this.conversationRequests.size > 100) this.conversationRequests.delete(this.conversationRequests.keys().next().value!); }
     this.ws.send(JSON.stringify(cmd));
+    return cmd.request_id;
   }
 
-  public sendPrompt(prompt: string, attachmentIds: string[] = [], modelSlug?: string) {
+  public sendPrompt(prompt: string, attachmentIds: string[] = [], modelSlug?: string, councilAction?: CouncilAction): string | null {
     const store = useCockpitStore.getState();
-    if (!store.activeConversationId) return;
-
-    // Optimistically add user message to timeline
-    const userMsgId = `usr-${crypto.randomUUID()}`;
-    store.addMessage({
-      id: userMsgId,
-      conversation_id: store.activeConversationId,
-      role: 'user',
-      author_time: new Date().toISOString(),
-      content: prompt,
-      attachment_ids: attachmentIds,
-    });
-
-    this.sendCommand('send_prompt', {
-      prompt,
-      attachment_ids: attachmentIds,
-      model_slug: modelSlug,
-    });
+    const id = store.activeConversationId;
+    if (!id || store.pendingSubmissions[id] || store.activeRunId) return null;
+    const requestId = this.sendCommand('send_prompt', { prompt, attachment_ids: attachmentIds, model_slug: modelSlug, council_action: councilAction }, id);
+    if (requestId) {
+      this.pendingPrompts.set(requestId, { conversationId: id, prompt, attachmentIds, draft: JSON.stringify(store.draftsByConversation[id]) });
+      store.setPendingSubmission(id, requestId);
+    }
+    return requestId;
   }
 
   public cancelActiveRun() {

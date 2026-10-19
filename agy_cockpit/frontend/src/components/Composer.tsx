@@ -1,13 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useCockpitStore } from '../store/useCockpitStore';
+import { useCockpitStore, EMPTY_DRAFT } from '../store/useCockpitStore';
 import { wsService } from '../services/websocket';
 import { Send, Square, Paperclip, AtSign, Loader2, X, Boxes, FileDiff, HelpCircle, Trash2, Users, CheckCircle2 } from 'lucide-react';
-
-interface AttachedFile {
-  id: string;
-  name: string;
-  size: number;
-}
 
 const SLASH_COMMANDS = [
   { command: '/council', label: 'AI Council', description: 'Open Council panel / Deliberate', icon: Users },
@@ -19,7 +13,11 @@ const SLASH_COMMANDS = [
 ];
 
 export const Composer: React.FC = () => {
-  const [text, setText] = useState('');
+  const activeConversationId = useCockpitStore((s) => s.activeConversationId);
+  const draft = useCockpitStore(s => s.draftsByConversation[s.activeConversationId || ''] || EMPTY_DRAFT);
+  const { text, attachments } = draft;
+  const setText = (value: string | ((old: string) => string)) => { if (activeConversationId) useCockpitStore.getState().setDraftText(activeConversationId, typeof value === 'function' ? value(text) : value); };
+  const pendingSubmission = useCockpitStore(s => Boolean(s.pendingSubmissions[s.activeConversationId || '']));
   const [mentionActive, setMentionActive] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [selectedMentionIdx, setSelectedMentionIdx] = useState(0);
@@ -27,20 +25,21 @@ export const Composer: React.FC = () => {
   const [slashActive, setSlashActive] = useState(false);
   const [selectedSlashIdx, setSelectedSlashIdx] = useState(0);
 
-  const [attachments, setAttachments] = useState<AttachedFile[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
+  const [uploadsByConversation, setUploadsByConversation] = useState<Record<string, number>>({});
+  const isUploading = Boolean(uploadsByConversation[activeConversationId || '']);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const activeConversationId = useCockpitStore((s) => s.activeConversationId);
   const activeRunId = useCockpitStore((s) => s.activeRunId);
   const setActiveDrawerTab = useCockpitStore((s) => s.setActiveDrawerTab);
   const isSearchingMention = useCockpitStore((s) => s.isSearchingMention);
   const mentionResults = useCockpitStore((s) => s.mentionResults);
   const selectedModel = useCockpitStore((s) => s.conversations[s.activeConversationId || '']?.model_slug);
 
+  const modelAvailable = useCockpitStore(s => s.modelCatalogStatus === 'ready' && s.models.some(m => m.slug === selectedModel));
   const isRunning = Boolean(activeRunId);
+  useEffect(() => { setMentionActive(false); setSlashActive(false); }, [activeConversationId]);
 
   // Auto-grow textarea height
   useEffect(() => {
@@ -73,7 +72,7 @@ export const Composer: React.FC = () => {
       setText('');
     } else if (trimmed === '/clear') {
       setText('');
-      setAttachments([]);
+      if (activeConversationId) useCockpitStore.getState().clearDraft(activeConversationId);
     } else if (trimmed === '/help') {
       setText('');
       wsService.sendPrompt('/help');
@@ -87,7 +86,7 @@ export const Composer: React.FC = () => {
   const handleSend = () => {
     let trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
-    if (isRunning || !activeConversationId) return;
+    if (isRunning || pendingSubmission || !modelAvailable || !activeConversationId) return;
 
     // Check for slash command invocation
     if (trimmed.startsWith('/')) {
@@ -104,8 +103,6 @@ export const Composer: React.FC = () => {
 
     const attachmentIds = attachments.map((a) => a.id);
     wsService.sendPrompt(trimmed, attachmentIds, selectedModel);
-    setText('');
-    setAttachments([]);
     setMentionActive(false);
     setSlashActive(false);
     if (textareaRef.current) {
@@ -119,7 +116,7 @@ export const Composer: React.FC = () => {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0 || !activeConversationId) return;
-    setIsUploading(true);
+    setUploadsByConversation(s => ({ ...s, [activeConversationId]: (s[activeConversationId] || 0) + 1 }));
     try {
       const files = Array.from(e.target.files);
       for (const file of files) {
@@ -135,25 +132,24 @@ export const Composer: React.FC = () => {
         });
 
         if (!res.ok) {
-          throw new Error(`Upload failed: ${res.statusText}`);
+          const detail = await res.json().catch(() => ({}));
+          throw new Error(typeof detail.detail === 'string' ? detail.detail : `Upload failed (${res.status})`);
         }
 
         const data = await res.json();
         if (data.attachment) {
-          setAttachments((prev) => [
-            ...prev,
-            {
+          useCockpitStore.getState().addDraftAttachment(activeConversationId, {
               id: data.attachment.id,
               name: data.attachment.filename || data.attachment.file_name,
               size: data.attachment.size_bytes ?? data.attachment.byte_size ?? 0,
-            },
-          ]);
+          });
         }
       }
     } catch (err) {
       console.error('Failed to upload attachment:', err);
+      useCockpitStore.getState().addNotice({ id: crypto.randomUUID(), message: String(err), conversationId: activeConversationId });
     } finally {
-      setIsUploading(false);
+      setUploadsByConversation(s => ({ ...s, [activeConversationId]: Math.max(0, (s[activeConversationId] || 0) - 1) }));
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -161,7 +157,7 @@ export const Composer: React.FC = () => {
   };
 
   const removeAttachment = (id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    if (activeConversationId) useCockpitStore.getState().removeDraftAttachment(activeConversationId, id);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -431,7 +427,7 @@ export const Composer: React.FC = () => {
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={(!text.trim() && attachments.length === 0) || !activeConversationId}
+                disabled={!modelAvailable || pendingSubmission || isUploading || (!text.trim() && attachments.length === 0) || !activeConversationId}
                 className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-xs font-medium transition-colors"
               >
                 <span>Send</span>

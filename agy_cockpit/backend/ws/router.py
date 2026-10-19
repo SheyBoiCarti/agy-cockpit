@@ -37,6 +37,7 @@ class WebSocketRouter:
         diff_service: Any = None,
         attachment_service: Any = None,
         artifact_service: Any = None,
+        model_catalog: Any = None,
     ):
         self.replay_service = replay_service
         self.workspace_service = workspace_service
@@ -47,6 +48,7 @@ class WebSocketRouter:
         self.diff_service = diff_service
         self.attachment_service = attachment_service
         self.artifact_service = artifact_service
+        self.model_catalog = model_catalog
         self.handlers: Dict[str, CommandHandler] = {}
         self._register_default_handlers()
 
@@ -146,7 +148,7 @@ class WebSocketRouter:
                 event = create_server_event(
                     event_type="workspace_opened",
                     session_id=session.session_id,
-                    payload={"workspace": ws.model_dump()},
+                    payload={"workspace": ws.model_dump(), "request_id": cmd.request_id},
                 )
                 await session.send_event(event)
             else:
@@ -184,7 +186,7 @@ class WebSocketRouter:
         event = create_server_event(
             event_type="conversation_list",
             session_id=session.session_id,
-            payload={"conversations": [c.model_dump() for c in convs]},
+            payload={"conversations": [c.model_dump() for c in convs], "workspace_id": ws_id},
         )
         await session.send_event(event)
 
@@ -193,7 +195,10 @@ class WebSocketRouter:
             return
         ws_id = cmd.payload.get("workspace_id")
         title = cmd.payload.get("title", "New Conversation")
-        model_slug = cmd.payload.get("model_slug", "gemini-3.8-flash-high")
+        model_slug = cmd.payload.get("model_slug")
+        if not model_slug:
+            settings = await self.settings_service.get_settings() if self.settings_service else None
+            model_slug = settings.default_model if settings else "gemini-3.8-flash-high"
         if not ws_id:
             err = create_protocol_error(
                 session_id=session.session_id,
@@ -204,6 +209,8 @@ class WebSocketRouter:
             await session.send_event(err)
             return
 
+        if self.model_catalog:
+            await self.model_catalog.validate_model_slug(model_slug)
         conv = await self.conversation_service.create_conversation(ws_id, title=title, model_slug=model_slug)
         session.active_conversation_id = conv.id
         event = create_server_event(
@@ -303,6 +310,9 @@ class WebSocketRouter:
             if active_run_obj:
                 active_run = active_run_obj.model_dump()
 
+        workspace = await self.workspace_service.get_workspace(conv.workspace_id) if self.workspace_service else None
+        siblings = await self.conversation_service.list_conversations(conv.workspace_id)
+        sync_state = await self.replay_service.build_sync_state_payload(active_run['id']) if active_run and self.replay_service else None
         event = create_server_event(
             event_type="conversation_snapshot",
             session_id=session.session_id,
@@ -312,6 +322,10 @@ class WebSocketRouter:
                 "messages": msg_dicts,
                 "artifacts": artifacts_list,
                 "active_run": active_run,
+                "sync_state": sync_state,
+                "workspace": workspace.model_dump() if workspace else None,
+                "conversations": [c.model_dump() for c in siblings],
+                "request_id": cmd.request_id,
             },
         )
         await session.send_event(event)
@@ -390,12 +404,17 @@ class WebSocketRouter:
                 return
 
         try:
+            if self.model_catalog:
+                conv = await self.conversation_service.get_conversation(conv_id)
+                await self.model_catalog.validate_model_slug(model_slug or (conv.model_slug if conv else None))
             run = await self.run_service.start_prompt_run(
                 session_id=session.session_id,
                 conversation_id=conv_id,
                 prompt=prompt,
                 attachment_ids=attachment_ids,
                 model_slug=model_slug,
+                request_id=cmd.request_id,
+                council_action=cmd.payload.get("council_action"),
             )
             session.active_run_id = run.id
         except Exception as e:

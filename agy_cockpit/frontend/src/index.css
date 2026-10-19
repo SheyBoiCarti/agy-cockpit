@@ -21,3 +21,16 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
 }
+
+/* Panels overlay chat where a side-by-side layout cannot fit. */
+.cockpit-sidebar { flex-shrink: 0; }
+.cockpit-drawer { flex-shrink: 0; width: 560px; }
+@media (max-width: 1279px) {
+  .cockpit-drawer { position: fixed; inset: 0 0 0 auto; width: min(560px, 100vw); z-index: 40; box-shadow: -100vw 0 0 100vw #0009; }
+}
+@media (max-width: 767px) {
+  .cockpit-sidebar { display: none; }
+  .cockpit-sidebar.is-open { display: flex; position: fixed; inset: 0 auto 0 0; width: min(320px, 100vw); z-index: 40; box-shadow: 100vw 0 0 100vw #0009; }
+}
+
+@media (min-width: 1280px) { .drawer-backdrop { display: none; } }

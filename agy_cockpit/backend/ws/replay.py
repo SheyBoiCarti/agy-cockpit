@@ -119,14 +119,17 @@ class ReplayService:
         output_text = "".join(token_chunks)
 
         tools = await self.tool_repo.list_by_run(run_id)
-        pending_appr = await self.appr_repo.get_pending_for_run(run_id)
+        pending_requests = [a for a in await self.appr_repo.list_by_run(run_id) if a.decision is None]
+        pending_appr = pending_requests[0] if pending_requests else None
         changes = await self.fc_repo.list_by_run(run_id)
         subagents = await self.sub_repo.list_by_run(run_id)
         artifacts = await self.art_repo.list_by_run(run_id)
-        max_seq = await self.event_repo.get_max_sequence(run_id)
+        max_seq = max((e.sequence or 0 for e in all_events), default=0)
 
         return {
             "run_id": run_id,
+            "conversation_id": run.conversation_id,
+            "council_events": [json.loads(e.payload_json) for e in all_events if e.type == "council_progress"],
             "state": run.state.value,
             "reasoning": reasoning_text,
             "output": output_text,
@@ -141,6 +144,7 @@ class ReplayService:
                 }
                 for t in tools
             ],
+            "pending_approvals": [{"id": a.id, "sdk_tool_name": a.sdk_tool_name, "args": a.parsed_args, "reason": a.reason} for a in pending_requests],
             "pending_approval": (
                 {
                     "id": pending_appr.id,

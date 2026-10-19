@@ -6,6 +6,8 @@ import * as monaco from 'monaco-editor';
 // Configure @monaco-editor/react to use local bundled monaco instance rather than CDN
 loader.config({ monaco });
 
+import { usePanelFocus } from './usePanelFocus';
+import { CouncilPanel } from './CouncilPanel';
 import { wsService } from '../services/websocket';
 import Convert from 'ansi-to-html';
 import { MarkdownView } from './MarkdownView';
@@ -22,8 +24,6 @@ import {
   AlertTriangle,
   Scissors,
   Users,
-  Sparkles,
-  CheckCircle2,
 } from 'lucide-react';
 
 const ansiConverter = new Convert({
@@ -37,6 +37,7 @@ export const RightDrawer: React.FC = () => {
   const activeDrawerTab = useCockpitStore((s) => s.activeDrawerTab);
   const setActiveDrawerTab = useCockpitStore((s) => s.setActiveDrawerTab);
 
+  const panelRef = usePanelFocus(Boolean(activeDrawerTab), '(max-width: 1279px)', () => setActiveDrawerTab(null));
   const changedFilesMap = useCockpitStore((s) => s.changedFiles);
   const selectedDiffFile = useCockpitStore((s) => s.selectedDiffFile);
   const diffData = useCockpitStore((s) => s.diffData);
@@ -103,7 +104,7 @@ export const RightDrawer: React.FC = () => {
   };
 
   return (
-    <aside className="w-96 md:w-[480px] lg:w-[560px] border-l border-neutral-800 bg-neutral-950 flex flex-col h-full z-20 shadow-2xl transition-all select-none">
+    <aside ref={panelRef} tabIndex={-1} aria-label="Auxiliary panel" className="cockpit-drawer border-l border-neutral-800 bg-neutral-950 flex flex-col h-full z-20 shadow-2xl transition-all select-none">
       {/* Drawer Header with Tabs */}
       <div className="h-14 border-b border-neutral-800 bg-neutral-900/60 px-3 flex items-center justify-between gap-1">
         <div className="flex items-center space-x-1 overflow-x-auto scrollbar-none py-1 min-w-0 flex-1">
@@ -514,162 +515,7 @@ export const RightDrawer: React.FC = () => {
         )}
 
         {/* AI COUNCIL TAB */}
-        {activeDrawerTab === 'council' && (
-          <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-neutral-950 text-xs">
-            {/* Header & Description */}
-            <div className="p-3 bg-neutral-900/80 border border-indigo-900/40 rounded-xl space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <Users className="w-4 h-4 text-indigo-400" />
-                  <span className="font-semibold text-neutral-100">AI Council Control Plane</span>
-                </div>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-950 text-indigo-300 border border-indigo-800/60">
-                  Gemini Swarm
-                </span>
-              </div>
-              <p className="text-neutral-400 text-[11px] leading-relaxed">
-                Spawn and convene multiple specialized Gemini agents simultaneously to analyze architectures, debate trade-offs, vote on motions, and synthesize consensus.
-              </p>
-            </div>
-
-            {/* Quick Actions */}
-            <div className="space-y-1.5">
-              <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">
-                Council Actions
-              </span>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const text = prompt('Enter topic for 3-stage Council Deliberation:', 'Should we migrate to microservices?');
-                    if (text) {
-                      wsService.sendPrompt(`/council ${text}`);
-                    }
-                  }}
-                  className="p-2.5 bg-indigo-950/60 hover:bg-indigo-900/80 border border-indigo-700/50 rounded-lg text-left transition-colors cursor-pointer group"
-                >
-                  <div className="font-medium text-indigo-200 flex items-center space-x-1.5 mb-1">
-                    <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>Deliberate</span>
-                  </div>
-                  <div className="text-[10px] text-neutral-400 leading-tight">
-                    Convene 3-phase debate & synthesis
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const motion = prompt('Enter motion for Roll-Call Vote:', 'Adopt strict type safety across codebase');
-                    if (motion) {
-                      wsService.sendPrompt(`/vote ${motion}`);
-                    }
-                  }}
-                  className="p-2.5 bg-neutral-900 hover:bg-neutral-850 border border-neutral-800 rounded-lg text-left transition-colors cursor-pointer group"
-                >
-                  <div className="font-medium text-amber-200 flex items-center space-x-1.5 mb-1">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Roll-Call Vote</span>
-                  </div>
-                  <div className="text-[10px] text-neutral-400 leading-tight">
-                    Individual votes & tally
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            {/* Council Roster */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">
-                  Council Roster (Personas)
-                </span>
-                <span className="text-[10px] text-neutral-500 font-mono">6 Agents</span>
-              </div>
-
-              {[
-                {
-                  icon: '🏛️',
-                  role: 'Architect',
-                  title: 'Lead Systems Architect',
-                  focus: 'Modularity, boundaries, scalability, clean domain abstractions',
-                  tag: '@Architect',
-                },
-                {
-                  icon: '🛡️',
-                  role: 'Security',
-                  title: 'Security & Resilience Sentinel',
-                  focus: 'Vulnerability surface, least privilege, threat modeling, sandboxing',
-                  tag: '@Security',
-                },
-                {
-                  icon: '⚡',
-                  role: 'Pragmatist',
-                  title: 'Pragmatic Staff Engineer',
-                  focus: 'Developer velocity, practical simplicity, minimal overhead',
-                  tag: '@Pragmatist',
-                },
-                {
-                  icon: '🔍',
-                  role: 'Critic',
-                  title: "Devil's Advocate & Edge-Case Specialist",
-                  focus: 'Blind spots, single points of failure, unstated trade-offs',
-                  tag: '@Critic',
-                },
-                {
-                  icon: '🚀',
-                  role: 'Performance',
-                  title: 'Performance & Systems Specialist',
-                  focus: 'Latency profiles, throughput, memory bounds, hot paths',
-                  tag: '@Performance',
-                },
-                {
-                  icon: '⚖️',
-                  role: 'Synthesizer',
-                  title: 'Council Chair & Arbitrator',
-                  focus: 'Consensus derivation, dispute arbitration, final verdict',
-                  tag: '@Synthesizer',
-                },
-              ].map((member) => (
-                <div
-                  key={member.role}
-                  className="p-2.5 bg-neutral-900 border border-neutral-800 rounded-xl space-y-1 hover:border-neutral-700 transition-colors"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-sm">{member.icon}</span>
-                      <span className="font-semibold text-neutral-200">{member.role}</span>
-                      <span className="text-[10px] text-neutral-400 font-mono">({member.title})</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        wsService.sendPrompt(`${member.tag} `);
-                      }}
-                      className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-[10px] font-mono text-indigo-300 transition-colors cursor-pointer"
-                      title={`Ask ${member.role}`}
-                    >
-                      Ask
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-neutral-400 leading-tight pl-6">
-                    {member.focus}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {/* Deliberation Lifecycle Explainer */}
-            <div className="p-3 bg-neutral-900/50 border border-neutral-800 rounded-xl space-y-1.5 text-[11px] text-neutral-400">
-              <div className="font-semibold text-neutral-300">How Council Deliberation Works:</div>
-              <ol className="list-decimal list-inside space-y-1 text-neutral-400">
-                <li><strong className="text-neutral-300">Stage 1:</strong> All agents analyze independently in parallel.</li>
-                <li><strong className="text-neutral-300">Stage 2:</strong> Agents cross-examine and challenge peer critiques.</li>
-                <li><strong className="text-neutral-300">Stage 3:</strong> Synthesizer drafts the unanimous consensus and action plan.</li>
-              </ol>
-            </div>
-          </div>
-        )}
+        {activeDrawerTab === 'council' && <CouncilPanel />}
       </div>
     </aside>
   );

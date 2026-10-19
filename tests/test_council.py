@@ -136,7 +136,8 @@ async def test_run_service_council_integration(tmp_path):
 
         event_service = EventService(conn)
         approval_service = ApprovalService(conn, event_service)
-        run_service = RunService(conn, event_service, approval_service)
+        from agy_cockpit.backend.services.agent_service import MockAntigravityAdapter
+        run_service = RunService(conn, event_service, approval_service, adapter=MockAntigravityAdapter())
 
         # Trigger /council prompt
         run = await run_service.start_prompt_run(

@@ -33,236 +33,101 @@ class CouncilDeliberationResult:
     final_synthesis: str = ""
 
 
-class AICouncil:
-    """Orchestrates an AI Council consisting of X Gemini agents."""
+async def gather_members(coroutines):
+    tasks = [asyncio.create_task(c) for c in coroutines]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks: task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
-    def __init__(
-        self,
-        num_agents: int = 3,
-        model_slug: str = "gemini-3.8-flash-high",
-        workspace_path: Optional[str] = None,
-        custom_personas: Optional[List[CouncilPersona]] = None,
-    ):
+
+class AICouncil:
+    def __init__(self, num_agents=3, model_slug="gemini-3.8-flash-high", workspace_path=None,
+                 custom_personas=None, runner=None, member_timeout_seconds=120, on_progress=None):
         self.num_agents = max(1, num_agents)
         self.model_slug = model_slug
         self.workspace_path = workspace_path
-
-        # Initialize council members
+        self.on_progress = on_progress
         personas = custom_personas or get_council_personas(self.num_agents)
-        self.members: List[CouncilMember] = [
-            CouncilMember(
-                persona=p,
-                model_slug=self.model_slug,
-                workspace_path=self.workspace_path,
-            )
-            for p in personas[: self.num_agents]
-        ]
+        self.members = [CouncilMember(p, model_slug=model_slug, workspace_path=workspace_path,
+            runner=runner, member_timeout_seconds=member_timeout_seconds) for p in personas[:self.num_agents]]
+        self.chair = CouncilMember(SYNTHESIZER_PERSONA, model_slug=model_slug, workspace_path=workspace_path,
+            runner=runner, member_timeout_seconds=member_timeout_seconds)
 
-        # The Council Chair / Synthesizer
-        self.chair = CouncilMember(
-            persona=SYNTHESIZER_PERSONA,
-            model_slug=self.model_slug,
-            workspace_path=self.workspace_path,
-        )
+    def get_member(self, target):
+        if isinstance(target, int): return self.members[target] if 0 <= target < len(self.members) else None
+        target = target.lower().lstrip('@')
+        return next((m for m in [*self.members, self.chair] if target in (m.id.lower(), m.name.lower())), None)
 
-    def get_member(self, target: Union[str, int]) -> Optional[CouncilMember]:
-        """Looks up a council member by index or name/role."""
-        if isinstance(target, int):
-            if 0 <= target < len(self.members):
-                return self.members[target]
-            return None
+    async def _progress(self, stage, member, state, text_delta=None):
+        from agy_cockpit.council.member import invoke
+        await invoke(self.on_progress, stage, member.id, state, text_delta)
 
-        target_lower = target.strip().lower().lstrip("@")
-        for m in self.members:
-            if m.id.lower() == target_lower or m.name.lower() == target_lower:
-                return m
-        if self.chair.id.lower() == target_lower or self.chair.name.lower() == target_lower:
-            return self.chair
-        return None
+    async def _ask(self, member, prompt, stage, cancellation_token=None, on_token=None):
+        from agy_cockpit.council.member import invoke
+        if cancellation_token and cancellation_token.is_set(): raise asyncio.CancelledError()
+        await self._progress(stage, member, 'running')
+        async def token(text):
+            await self._progress(stage, member, 'running', text)
+            await invoke(on_token, text)
+        try:
+            text = await member.chat(prompt, on_token=token, cancellation_token=cancellation_token)
+            await self._progress(stage, member, 'completed')
+            return MemberResponse(member.id, member.name, member.title, text)
+        except asyncio.CancelledError:
+            await self._progress(stage, member, 'cancelled'); raise
+        except Exception:
+            await self._progress(stage, member, 'failed'); raise
 
-    async def broadcast(
-        self,
-        message: str,
-        on_member_token: Optional[Callable[[CouncilMember, str], Any]] = None,
-    ) -> List[MemberResponse]:
-        """Broadcasts a user message to all X council members concurrently."""
-        tasks = []
-        for member in self.members:
-            async def _run_member(m: CouncilMember):
-                def _token_cb(token: str):
-                    if on_member_token:
-                        res = on_member_token(m, token)
-                        if asyncio.iscoroutine(res):
-                            return res
-                    return None
+    async def broadcast(self, message, on_member_token=None, cancellation_token=None):
+        def callback(member):
+            return (lambda text: on_member_token(member, text)) if on_member_token else None
+        return await gather_members([self._ask(m, message, 'analysis', cancellation_token, callback(m)) for m in self.members])
 
-                reply = await m.chat(message, on_token=_token_cb)
-                return MemberResponse(
-                    member_id=m.id,
-                    member_name=m.name,
-                    member_title=m.title,
-                    content=reply,
-                )
-
-            tasks.append(_run_member(member))
-
-        results = await asyncio.gather(*tasks)
-        return list(results)
-
-    async def chat_member(
-        self,
-        target: Union[str, int],
-        message: str,
-        on_token: Optional[Callable[[str], Any]] = None,
-    ) -> MemberResponse:
-        """Sends a direct message to a specific council member."""
+    async def chat_member(self, target, message, on_token=None, cancellation_token=None):
         member = self.get_member(target)
-        if not member:
-            raise ValueError(f"Council member '{target}' not found. Available: {[m.name for m in self.members]}")
+        if not member: raise ValueError(f"Council member '{target}' not found")
+        if not message.strip(): raise ValueError('A Council question is required')
+        return await self._ask(member, message, 'ask', cancellation_token, on_token)
 
-        reply = await member.chat(message, on_token=on_token)
-        return MemberResponse(
-            member_id=member.id,
-            member_name=member.name,
-            member_title=member.title,
-            content=reply,
-        )
-
-    async def deliberate(
-        self,
-        topic: str,
-        on_stage_start: Optional[Callable[[str, int], Any]] = None,
-        on_member_token: Optional[Callable[[CouncilMember, str], Any]] = None,
-        on_synthesis_token: Optional[Callable[[str], Any]] = None,
-    ) -> CouncilDeliberationResult:
-        """Conducts a rigorous 3-stage council deliberation on a topic or proposal."""
-        result = CouncilDeliberationResult(topic=topic)
-
-        # -------------------------------------------------------------
-        # STAGE 1: Independent Deliberation (Concurrent Analysis)
-        # -------------------------------------------------------------
-        if on_stage_start:
-            res = on_stage_start("Stage 1: Independent Deliberation & Analysis", 1)
-            if asyncio.iscoroutine(res):
-                await res
-
-        stage1_prompt = (
-            f"[COUNCIL CONVENE — STAGE 1: INDEPENDENT PERSPECTIVE]\n"
-            f"Topic for Deliberation:\n{topic}\n\n"
-            f"Provide your independent, focused assessment strictly through the lens of your assigned persona "
-            f"and core priorities. Be concise, rigorous, and direct."
-        )
-
-        stage1_responses = await self.broadcast(stage1_prompt, on_member_token=on_member_token)
-        result.stage_1_perspectives = stage1_responses
-
-        # -------------------------------------------------------------
-        # STAGE 2: Cross-Examination & Peer Critique (Concurrent Debate)
-        # -------------------------------------------------------------
-        if on_stage_start:
-            res = on_stage_start("Stage 2: Cross-Examination & Peer Critique", 2)
-            if asyncio.iscoroutine(res):
-                await res
-
-        perspectives_summary = "\n\n".join([
-            f"### [{r.member_name} — {r.member_title}]\n{r.content}"
-            for r in stage1_responses
-        ])
-
-        stage2_tasks = []
-        for member in self.members:
-            async def _run_critique(m: CouncilMember):
-                critique_prompt = (
-                    f"[COUNCIL CONVENE — STAGE 2: CROSS-EXAMINATION]\n"
-                    f"Here are the perspectives submitted by your fellow council members:\n\n"
-                    f"{perspectives_summary}\n\n"
-                    f"Review their assessments. From your stance as {m.title}:\n"
-                    f"1. Which points do you strongly agree with and endorse?\n"
-                    f"2. Where do you disagree or see unaddressed risks/blind spots?\n"
-                    f"Keep your response concise (under 200 words) and constructive."
-                )
-
-                def _token_cb(token: str):
-                    if on_member_token:
-                        return on_member_token(m, token)
-                    return None
-
-                reply = await m.chat(critique_prompt, on_token=_token_cb)
-                return MemberResponse(
-                    member_id=m.id,
-                    member_name=m.name,
-                    member_title=m.title,
-                    content=reply,
-                )
-
-            stage2_tasks.append(_run_critique(member))
-
-        stage2_responses = await asyncio.gather(*stage2_tasks)
-        result.stage_2_critiques = list(stage2_responses)
-
-        # -------------------------------------------------------------
-        # STAGE 3: Council Synthesis & Verdict
-        # -------------------------------------------------------------
-        if on_stage_start:
-            res = on_stage_start("Stage 3: Council Synthesis & Actionable Consensus", 3)
-            if asyncio.iscoroutine(res):
-                await res
-
-        critiques_summary = "\n\n".join([
-            f"### [{r.member_name} — {r.member_title}]\n{r.content}"
-            for r in stage2_responses
-        ])
-
-        synthesis_prompt = (
-            f"[COUNCIL CONVENE — STAGE 3: SYNTHESIS & FINAL VERDICT]\n"
-            f"Topic: {topic}\n\n"
-            f"Initial Perspectives:\n{perspectives_summary}\n\n"
-            f"Peer Critiques & Debate:\n{critiques_summary}\n\n"
-            f"As the Council Chair and Arbitrator, synthesize the entire deliberation into:\n"
-            f"1. **Core Agreements**: Unanimous points and consensus principles.\n"
-            f"2. **Primary Trade-offs**: Contested trade-offs and differing architectural priorities.\n"
-            f"3. **Council Recommendation & Next Steps**: The definitive, prioritized path forward."
-        )
-
-        synthesis_text = await self.chair.chat(synthesis_prompt, on_token=on_synthesis_token)
-        result.final_synthesis = synthesis_text
-
+    async def deliberate(self, topic, on_stage_start=None, on_member_token=None, on_synthesis_token=None, cancellation_token=None):
+        from agy_cockpit.council.member import invoke
+        if not topic.strip(): raise ValueError('A deliberation topic is required')
+        result = CouncilDeliberationResult(topic)
+        await invoke(on_stage_start, 'Stage 1: Independent analysis', 1)
+        result.stage_1_perspectives = await self.broadcast(f"[COUNCIL STAGE 1: INDEPENDENT PERSPECTIVE]\nTopic: {topic}\nProvide a concise assessment from your own persona.", on_member_token, cancellation_token)
+        perspectives = '\n\n'.join(f'{r.member_name}: {r.content}' for r in result.stage_1_perspectives)
+        await invoke(on_stage_start, 'Stage 2: Peer critique', 2)
+        def callback(member):
+            return (lambda text: on_member_token(member, text)) if on_member_token else None
+        result.stage_2_critiques = await gather_members([self._ask(m,
+            f"[COUNCIL STAGE 2: CROSS-EXAMINATION]\nTopic: {topic}\nPeer perspectives:\n{perspectives}\nState agreements, disagreements and unaddressed risks in under 200 words.",
+            'critique', cancellation_token, callback(m)) for m in self.members])
+        critiques = '\n\n'.join(f'{r.member_name}: {r.content}' for r in result.stage_2_critiques)
+        await invoke(on_stage_start, 'Stage 3: Synthesis', 3)
+        synthesis = await self._ask(self.chair,
+            f"[COUNCIL STAGE 3: SYNTHESIS]\nTopic: {topic}\nPerspectives:\n{perspectives}\nCritiques:\n{critiques}\nGive core agreements, contested trade-offs and prioritized next steps. Do not invent unanimity.",
+            'synthesis', cancellation_token, on_synthesis_token)
+        result.final_synthesis = synthesis.content
         return result
 
-    async def vote(self, motion: str) -> Dict[str, Any]:
-        """Requests an immediate roll-call vote from all council members."""
-        vote_prompt = (
-            f"[COUNCIL ROLL-CALL VOTE]\n"
-            f"Motion on the table: \"{motion}\"\n\n"
-            f"Cast your vote as {self.chair.title}. You must begin your response with exactly one word: "
-            f"'APPROVE', 'REJECT', or 'ABSTAIN', followed by exactly one sentence explaining why."
-        )
-
-        tasks = [m.chat(vote_prompt) for m in self.members]
-        raw_votes = await asyncio.gather(*tasks)
-
-        tally = {"APPROVE": 0, "REJECT": 0, "ABSTAIN": 0}
-        votes: List[Dict[str, str]] = []
-
-        for m, reply in zip(self.members, raw_votes):
-            text = reply.strip()
-            first_word = text.split()[0].upper().rstrip(":,.") if text else "ABSTAIN"
-            decision = first_word if first_word in tally else "ABSTAIN"
-            tally[decision] += 1
-            votes.append({
-                "member": m.name,
-                "title": m.title,
-                "vote": decision,
-                "rationale": text,
-            })
-
-        outcome = "PASSED" if tally["APPROVE"] > tally["REJECT"] else "FAILED"
-        if tally["APPROVE"] == tally["REJECT"]:
-            outcome = "TIED"
-
-        return {
-            "motion": motion,
-            "outcome": outcome,
-            "tally": tally,
-            "votes": votes,
-        }
+    async def vote(self, motion, cancellation_token=None):
+        import re
+        from agy_cockpit.council.member import CouncilExecutionError
+        if not motion.strip(): raise ValueError('A voting motion is required')
+        responses = await gather_members([self._ask(m,
+            f"[COUNCIL ROLL-CALL VOTE]\nMotion: {motion}\nCast your vote as {m.title}. Begin with APPROVE, REJECT, or ABSTAIN followed by one sentence explaining why.",
+            'vote', cancellation_token) for m in self.members])
+        tally = {'APPROVE': 0, 'REJECT': 0, 'ABSTAIN': 0}
+        votes = []
+        for member, response in zip(self.members, responses):
+            match = re.match(r'^(?:\*\*|__|`)?(APPROVE|REJECT|ABSTAIN)(?:\*\*|__|`)?(?=[\s:,.!]|$)', response.content.strip(), re.I)
+            if not match:
+                await self._progress('vote', member, 'failed')
+                raise CouncilExecutionError(member.id, 'malformed vote result')
+            decision = match[1].upper(); tally[decision] += 1
+            votes.append({'member': member.name, 'title': member.title, 'vote': decision, 'rationale': response.content})
+        outcome = 'PASSED' if tally['APPROVE'] > tally['REJECT'] else 'FAILED' if tally['REJECT'] > tally['APPROVE'] else 'TIED'
+        return {'motion': motion, 'outcome': outcome, 'tally': tally, 'votes': votes}

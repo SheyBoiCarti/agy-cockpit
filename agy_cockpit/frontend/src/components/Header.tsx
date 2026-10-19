@@ -91,12 +91,14 @@ export const Header: React.FC = () => {
   };
 
   return (
-    <header className="h-14 border-b border-neutral-800 bg-neutral-900/70 px-4 flex items-center justify-between backdrop-blur-sm select-none z-10">
+    <header className="shrink-0 min-h-14 gap-2 py-2 border-b border-neutral-800 bg-neutral-900/70 px-4 flex flex-col items-stretch justify-between backdrop-blur-sm select-none z-10">
       {/* Title & Edit */}
-      <div className="flex items-center space-x-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0 w-full">
+        <button className="md:hidden shrink-0 p-2" aria-label="Open navigation" onClick={() => useCockpitStore.getState().setSidebarOpen(true)}>☰</button>
         {isEditingTitle ? (
-          <div className="flex items-center space-x-1">
+          <div className="flex flex-1 min-w-0 items-center gap-1">
             <input
+              aria-label="Conversation name"
               type="text"
               value={editedTitle}
               onChange={(e) => setEditedTitle(e.target.value)}
@@ -105,15 +107,17 @@ export const Header: React.FC = () => {
                 if (e.key === 'Escape') setIsEditingTitle(false);
               }}
               autoFocus
-              className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-100 focus:outline-none focus:border-indigo-500"
+              className="min-w-0 flex-1 w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-100 focus:outline-none focus:border-indigo-500"
             />
             <button
+              aria-label="Save conversation name"
               onClick={handleSaveTitle}
               className="p-1 text-emerald-400 hover:bg-neutral-800 rounded"
             >
               <Check className="w-4 h-4" />
             </button>
             <button
+              aria-label="Cancel rename"
               onClick={() => setIsEditingTitle(false)}
               className="p-1 text-neutral-400 hover:bg-neutral-800 rounded"
             >
@@ -139,16 +143,18 @@ export const Header: React.FC = () => {
       </div>
 
       {/* Selectors & Drawer Toggles */}
-      <div className="flex items-center space-x-3">
+      <div className="flex flex-wrap items-center gap-2 min-w-0">
         {/* Model Selector */}
-        <div className="flex items-center space-x-1.5 bg-neutral-950/60 border border-neutral-800 px-2.5 py-1 rounded-lg">
+        <div className="flex max-w-full min-w-0 items-center space-x-1.5 bg-neutral-950/60 border border-neutral-800 px-2.5 py-1 rounded-lg">
           <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
           <select
+            aria-label="Conversation model"
             value={conversation?.model_slug || settings.default_model}
             onChange={handleModelChange}
             disabled={!conversation}
-            className="bg-transparent text-xs text-neutral-200 focus:outline-none cursor-pointer disabled:opacity-50"
+            className="min-w-0 max-w-full bg-transparent text-xs text-neutral-200 focus:outline-none cursor-pointer disabled:opacity-50"
           >
+            {!models.some(m => m.slug === (conversation?.model_slug || settings.default_model)) && <option disabled value={conversation?.model_slug || settings.default_model}>{conversation?.model_slug || settings.default_model} (unavailable)</option>}
             {models.map((m) => (
               <option key={m.slug} value={m.slug} className="bg-neutral-900 text-neutral-200">
                 {m.label}
@@ -158,12 +164,12 @@ export const Header: React.FC = () => {
         </div>
 
         {/* Policy Selector */}
-        <div className="flex items-center space-x-1.5 bg-neutral-950/60 border border-neutral-800 px-2.5 py-1 rounded-lg">
+        <div className="flex max-w-full min-w-0 items-center space-x-1.5 bg-neutral-950/60 border border-neutral-800 px-2.5 py-1 rounded-lg">
           <Shield className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <select
             value={settings.policy_preset}
             onChange={handlePolicyChange}
-            className="bg-transparent text-xs text-neutral-200 focus:outline-none cursor-pointer"
+            className="min-w-0 max-w-full bg-transparent text-xs text-neutral-200 focus:outline-none cursor-pointer"
           >
             <option value="request-review" className="bg-neutral-900 text-neutral-200">
               Review Sensitive (Default)
