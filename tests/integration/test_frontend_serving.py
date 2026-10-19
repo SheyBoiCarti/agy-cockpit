@@ -7,6 +7,15 @@ from agy_cockpit.backend.app import create_app
 from agy_cockpit.backend.config import AppConfig
 
 
+def test_favicon_serving():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with TestClient(create_app(AppConfig(data_dir=tmpdir))) as client:
+            response = client.get('/favicon.svg')
+            assert response.status_code == 200
+            assert 'image/svg+xml' in response.headers['content-type']
+            assert '<svg' in response.text
+
+
 def test_static_index_serving():
     with tempfile.TemporaryDirectory() as tmpdir:
         cfg = AppConfig(data_dir=tmpdir, token="test-token-1")

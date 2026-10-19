@@ -93,7 +93,7 @@ class ListConversationsCommandPayload(BaseModel):
 class CreateConversationCommandPayload(BaseModel):
     workspace_id: str
     title: Optional[str] = "New Conversation"
-    model_slug: Optional[str] = "gemini-3.8-flash-high"
+    model_slug: Optional[str] = None
 
 
 class OpenConversationCommandPayload(BaseModel):
@@ -110,6 +110,7 @@ class ArchiveConversationCommandPayload(BaseModel):
 
 
 class SendPromptCommandPayload(BaseModel):
+    council_action: Optional[Dict[str, str]] = None
     prompt: str
     attachment_ids: List[str] = Field(default_factory=list)
     model_slug: Optional[str] = None

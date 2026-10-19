@@ -19,7 +19,31 @@ import { SyncStatePayload } from '../types/protocol';
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'recovering' | 'error';
 export type DrawerTab = 'diffs' | 'terminal' | 'subagents' | 'artifacts' | 'council' | null;
 
+export interface UiNotice { id: string; message: string; conversationId?: string }
+export interface AttachedFile { id: string; name: string; size: number }
+export interface ComposerDraft { text: string; attachments: AttachedFile[] }
+export const EMPTY_DRAFT: ComposerDraft = { text: '', attachments: [] };
+
 interface CockpitState {
+  councilProgress: Record<string, { conversationId: string; stage: string; memberId: string; state: string; text: string }>;
+  clearConversationRun: (conversationId: string) => void;
+  clearCouncilProgress: (runId: string) => void;
+  updateCouncilProgress: (runId: string, conversationId: string, payload: { stage: string; member_id: string; state: string; text_delta?: string }) => void;
+  modelCatalogStatus: 'loading' | 'ready' | 'stale' | 'unavailable';
+  modelCatalogError: string | null;
+  setModelCatalogStatus: (status: 'loading' | 'ready' | 'stale' | 'unavailable', error?: string | null) => void;
+  isSidebarOpen: boolean;
+  setSidebarOpen: (open: boolean) => void;
+  notices: UiNotice[];
+  addNotice: (notice: UiNotice) => void;
+  dismissNotice: (id: string) => void;
+  draftsByConversation: Record<string, ComposerDraft>;
+  setDraftText: (id: string, text: string) => void;
+  addDraftAttachment: (id: string, attachment: AttachedFile) => void;
+  removeDraftAttachment: (id: string, attachmentId: string) => void;
+  clearDraft: (id: string) => void;
+  pendingSubmissions: Record<string, string>;
+  setPendingSubmission: (id: string, requestId: string | null) => void;
   // Connection
   connectionState: ConnectionState;
   connectionError: string | null;
@@ -110,6 +134,26 @@ interface CockpitState {
 }
 
 export const useCockpitStore = create<CockpitState>((set) => ({
+  clearConversationRun: (id) => set(s => {
+    const runs = Object.fromEntries(Object.entries(s.runs).filter(([, r]) => r.conversation_id !== id));
+    if (s.activeConversationId === id) sessionStorage.removeItem('agy_active_run_id');
+    return { runs, ...(s.activeConversationId === id ? { activeRunId: null, pendingApproval: null, reasoning: '', streamingOutput: '', activeTools: {} } : {}) };
+  }),
+  councilProgress: {},
+  clearCouncilProgress: (runId) => set(s => ({ councilProgress: Object.fromEntries(Object.entries(s.councilProgress).filter(([key]) => !key.startsWith(runId + ':'))) })),
+  updateCouncilProgress: (runId, conversationId, p) => set(s => { const key = `${runId}:${p.stage}:${p.member_id}`; return { councilProgress: { ...s.councilProgress, [key]: { conversationId, stage: p.stage, memberId: p.member_id, state: p.state, text: (s.councilProgress[key]?.text || '') + (p.text_delta || '') } } }; }),
+  isSidebarOpen: false,
+  setSidebarOpen: (isSidebarOpen) => set(s => ({ isSidebarOpen, activeDrawerTab: isSidebarOpen ? null : s.activeDrawerTab })),
+  notices: [],
+  addNotice: (notice) => set((s) => ({ notices: [...s.notices.filter(n => n.id !== notice.id), notice].slice(-5) })),
+  dismissNotice: (id) => set((s) => ({ notices: s.notices.filter(n => n.id !== id) })),
+  draftsByConversation: {},
+  setDraftText: (id, text) => set(s => ({ draftsByConversation: { ...s.draftsByConversation, [id]: { ...(s.draftsByConversation[id] || EMPTY_DRAFT), text } } })),
+  addDraftAttachment: (id, attachment) => set(s => { const d = s.draftsByConversation[id] || EMPTY_DRAFT; return { draftsByConversation: { ...s.draftsByConversation, [id]: { ...d, attachments: [...d.attachments, attachment] } } }; }),
+  removeDraftAttachment: (id, attachmentId) => set(s => { const d = s.draftsByConversation[id] || EMPTY_DRAFT; return { draftsByConversation: { ...s.draftsByConversation, [id]: { ...d, attachments: d.attachments.filter(a => a.id !== attachmentId) } } }; }),
+  clearDraft: (id) => set(s => ({ draftsByConversation: { ...s.draftsByConversation, [id]: EMPTY_DRAFT } })),
+  pendingSubmissions: {},
+  setPendingSubmission: (id, requestId) => set(s => { const pending = { ...s.pendingSubmissions }; if (requestId) pending[id] = requestId; else delete pending[id]; return { pendingSubmissions: pending }; }),
   connectionState: 'disconnected',
   connectionError: null,
   lastSequence: typeof window !== 'undefined' ? parseInt(sessionStorage.getItem('agy_last_seen_sequence') || '0', 10) || 0 : 0,
@@ -148,10 +192,10 @@ export const useCockpitStore = create<CockpitState>((set) => ({
     default_model: 'gemini-3.8-flash-high',
     allowed_workspaces: [],
   },
-  models: [
-    { slug: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash', description: 'Fastest turn-around for everyday tasks' },
-    { slug: 'gemini-3.8-pro-high', label: 'Gemini 3.8 Pro', description: 'Deep reasoning, architecture, and large refactors' },
-  ],
+  models: [],
+  modelCatalogStatus: 'loading',
+  modelCatalogError: null,
+  setModelCatalogStatus: (modelCatalogStatus, modelCatalogError = null) => set({ modelCatalogStatus, modelCatalogError }),
 
   mentionQuery: '',
   mentionResults: [],
@@ -198,27 +242,17 @@ export const useCockpitStore = create<CockpitState>((set) => ({
     }),
 
   setActiveConversationId: (id) => {
-    if (typeof window !== 'undefined') {
-      if (id) {
-        sessionStorage.setItem('agy_active_conversation_id', id);
-      } else {
-        sessionStorage.removeItem('agy_active_conversation_id');
-      }
-    }
-    return set({
-      activeConversationId: id,
-      reasoning: '',
-      streamingOutput: '',
-      activeTools: {},
-      pendingApproval: null,
-      pendingApprovals: [],
-      activeRunId: null,
-      changedFiles: {},
-      subagents: {},
-      artifacts: {},
-      toolLogs: {},
-      selectedDiffFile: null,
-      diffData: null,
+    return set(state => {
+      const run = Object.values(state.runs).find(r => r.conversation_id === id && !['completed', 'failed', 'cancelled', 'interrupted'].includes(r.state));
+      if (id) sessionStorage.setItem('agy_active_conversation_id', id); else sessionStorage.removeItem('agy_active_conversation_id');
+      if (run) sessionStorage.setItem('agy_active_run_id', run.id); else sessionStorage.removeItem('agy_active_run_id');
+      return {
+        activeConversationId: id, activeRunId: run?.id || null,
+        reasoning: state.reasoningByConv[id || ''] || '', streamingOutput: state.streamingOutputByConv[id || ''] || '',
+        activeTools: state.activeToolsByConv[id || ''] || {},
+        pendingApproval: state.pendingApprovals.find(a => a.run_id === run?.id) || null,
+        changedFiles: {}, subagents: {}, artifacts: {}, toolLogs: {}, selectedDiffFile: null, diffData: null,
+      };
     });
   },
 
@@ -268,32 +302,23 @@ export const useCockpitStore = create<CockpitState>((set) => ({
       };
     }),
 
-  startRun: (run) => {
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('agy_active_run_id', run.id);
-      sessionStorage.setItem('agy_last_seen_sequence', '0');
-    }
-    return set((state) => {
-      const convId = run.conversation_id || state.activeConversationId || '';
-      return {
-        runs: { ...state.runs, [run.id]: run },
-        activeRunId: run.id,
-        lastSequence: 0,
-        streamingOutputByConv: { ...state.streamingOutputByConv, [convId]: '' },
-        reasoningByConv: { ...state.reasoningByConv, [convId]: '' },
-        activeToolsByConv: { ...state.activeToolsByConv, [convId]: {} },
-        reasoning: '',
-        streamingOutput: '',
-        activeTools: {},
-        pendingApproval: null,
-        pendingApprovals: [],
-        subagents: {},
-        artifacts: {},
-        // Preserve changedFiles across runs so diffs remain visible
-        toolLogs: {},
-      };
-    });
-  },
+  startRun: (run) => set(state => {
+    const convId = run.conversation_id || state.activeConversationId || '';
+    const selected = convId === state.activeConversationId;
+    const sameRun = Boolean(state.runs[run.id]);
+    const output = sameRun ? state.streamingOutputByConv[convId] || '' : '';
+    const reasoning = sameRun ? state.reasoningByConv[convId] || '' : '';
+    const tools = sameRun ? state.activeToolsByConv[convId] || {} : {};
+    if (selected) sessionStorage.setItem('agy_active_run_id', run.id);
+    return {
+      runs: { ...state.runs, [run.id]: run },
+      streamingOutputByConv: { ...state.streamingOutputByConv, [convId]: output },
+      reasoningByConv: { ...state.reasoningByConv, [convId]: reasoning },
+      activeToolsByConv: { ...state.activeToolsByConv, [convId]: tools },
+      ...(selected ? { activeRunId: run.id, streamingOutput: output, reasoning, activeTools: tools,
+        pendingApproval: state.pendingApprovals.find(a => a.run_id === run.id) || null } : {}),
+    };
+  }),
 
   appendReasoning: (convId, delta, sequence) =>
     set((state) => {
@@ -322,7 +347,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
   toolStarted: (convId, toolId, name, args, sequence) =>
     set((state) => {
       const targetConvId = convId || state.activeConversationId || '';
-      const runId = state.activeRunId || 'run';
+      const runId = Object.values(state.runs).find(r => r.conversation_id === targetConvId && !['completed', 'failed', 'cancelled', 'interrupted'].includes(r.state))?.id || 'run';
       const convTools = state.activeToolsByConv[targetConvId] || {};
       const existing = convTools[toolId] || state.activeTools[toolId];
       const tool: ToolExecution = {
@@ -379,7 +404,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         const next = state.pendingApprovals.slice(1);
         return {
           pendingApprovals: next,
-          pendingApproval: next[0] || null,
+          pendingApproval: next.find(a => state.runs[a.run_id]?.conversation_id === state.activeConversationId) || null,
         };
       }
       const existing = state.pendingApprovals.some((a) => a.id === approval.id);
@@ -388,7 +413,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         : [...state.pendingApprovals, approval];
       return {
         pendingApprovals: next,
-        pendingApproval: next[0] || null,
+        pendingApproval: next.find(a => state.runs[a.run_id]?.conversation_id === state.activeConversationId) || null,
       };
     }),
 
@@ -399,7 +424,7 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         : state.pendingApprovals.slice(1);
       return {
         pendingApprovals: next,
-        pendingApproval: next[0] || null,
+        pendingApproval: next.find(a => state.runs[a.run_id]?.conversation_id === state.activeConversationId) || null,
       };
     }),
 
@@ -479,15 +504,14 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         }
       }
 
-      if (typeof window !== 'undefined') {
-        sessionStorage.removeItem('agy_active_run_id');
-      }
+      if (state.activeRunId === runId) sessionStorage.removeItem('agy_active_run_id');
+      const pending = state.pendingApprovals.filter(a => a.run_id !== runId);
 
       return {
         runs: { ...state.runs, [runId]: updatedRun },
-        activeRunId: null,
-        pendingApproval: null,
-        pendingApprovals: [],
+        activeRunId: state.activeRunId === runId ? null : state.activeRunId,
+        pendingApproval: pending.find(a => a.run_id === state.activeRunId) || null,
+        pendingApprovals: pending,
         messages: updatedMessages,
         conversationMessageIds: updatedConvMsgIds,
       };
@@ -549,7 +573,10 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         : null;
 
       return {
-        activeRunId: payload.run_id,
+        activeRunId: ['completed', 'cancelled', 'failed', 'interrupted'].includes(payload.state) ? null : payload.run_id,
+        reasoningByConv: { ...state.reasoningByConv, [payload.conversation_id || state.activeConversationId || '']: payload.reasoning || '' },
+        streamingOutputByConv: { ...state.streamingOutputByConv, [payload.conversation_id || state.activeConversationId || '']: payload.output || '' },
+        activeToolsByConv: { ...state.activeToolsByConv, [payload.conversation_id || state.activeConversationId || '']: toolsMap },
         reasoning: payload.reasoning || '',
         streamingOutput: payload.output || '',
         activeTools: toolsMap,
@@ -557,13 +584,13 @@ export const useCockpitStore = create<CockpitState>((set) => ({
         subagents: subagentsMap,
         artifacts: artifactsMap,
         pendingApproval: syncApproval,
-        pendingApprovals: syncApproval ? [syncApproval] : [],
+        pendingApprovals: payload.pending_approvals?.map(a => ({ ...a, run_id: payload.run_id })) || (syncApproval ? [syncApproval] : []),
         lastSequence: Math.max(state.lastSequence, payload.last_sequence || 0),
       };
     }),
 
   setActiveDrawerTab: (activeDrawerTab) =>
-    set({ activeDrawerTab }),
+    set({ activeDrawerTab, isSidebarOpen: false }),
 
   setSelectedDiffFile: (selectedDiffFile, diffData = null) =>
     set({ selectedDiffFile, diffData, activeDrawerTab: 'diffs' }),
