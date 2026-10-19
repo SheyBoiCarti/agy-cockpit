@@ -1,12 +1,14 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCockpitStore } from '../store/useCockpitStore';
+import { ToolExecution } from '../types/models';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
 import { ReasoningAccordion } from './ReasoningAccordion';
 import { Bot, User, AlertCircle, CheckCircle2, Clock, Ban } from 'lucide-react';
 
 const EMPTY_MESSAGE_IDS: string[] = [];
+const EMPTY_ACTIVE_TOOLS: Record<string, ToolExecution> = {};
 
 export const ChatTimeline: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -22,13 +24,16 @@ export const ChatTimeline: React.FC = () => {
   const activeRunId = useCockpitStore((s) => s.activeRunId);
   const activeRun = useCockpitStore((s) => (s.activeRunId ? s.runs[s.activeRunId] : null));
   const reasoning = useCockpitStore((s) =>
-    (s.activeConversationId && s.reasoningByConv[s.activeConversationId]) || (s.activeRunId && activeRun?.conversation_id === s.activeConversationId ? s.reasoning : '')
+    (s.activeConversationId && s.reasoningByConv[s.activeConversationId]) ||
+    (s.activeRunId && s.runs[s.activeRunId]?.conversation_id === s.activeConversationId ? s.reasoning : '')
   );
   const streamingOutput = useCockpitStore((s) =>
-    (s.activeConversationId && s.streamingOutputByConv[s.activeConversationId]) || (s.activeRunId && activeRun?.conversation_id === s.activeConversationId ? s.streamingOutput : '')
+    (s.activeConversationId && s.streamingOutputByConv[s.activeConversationId]) ||
+    (s.activeRunId && s.runs[s.activeRunId]?.conversation_id === s.activeConversationId ? s.streamingOutput : '')
   );
   const activeTools = useCockpitStore((s) =>
-    (s.activeConversationId && s.activeToolsByConv[s.activeConversationId]) || (s.activeRunId && activeRun?.conversation_id === s.activeConversationId ? s.activeTools : {})
+    (s.activeConversationId && s.activeToolsByConv[s.activeConversationId]) ||
+    (s.activeRunId && s.runs[s.activeRunId]?.conversation_id === s.activeConversationId ? s.activeTools : EMPTY_ACTIVE_TOOLS)
   );
 
   const isCurrentRunForThisConv = Boolean(activeRunId && activeRun?.conversation_id === activeConversationId);
