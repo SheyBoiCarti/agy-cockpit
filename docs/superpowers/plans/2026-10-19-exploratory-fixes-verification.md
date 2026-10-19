@@ -33,7 +33,7 @@ Branch: `fix/exploratory-qa`.
 
 The installed subscription CLI explicitly rejects NDJSON `control_response` with “not supported yet”; permission-response variants are ignored. The inherited CLI adapter's observation of ACTIVE tools cannot prove pre-execution policy enforcement. This branch must not be described as satisfying the full Council approval requirement on that CLI.
 
-The user has been asked to choose read-only Council with subscription models, or the SDK approval bridge when API credentials are available. That question remains pending. No tool permissions have been automatically broadened to conceal the limitation. The full implementation goal remains active until this decision is resolved, implemented, and verified.
+The user has been asked to choose read-only Council with subscription models, or the SDK approval bridge when API credentials are available. That question remains pending. No tool permissions have been automatically broadened to conceal the limitation. The full implementation goal is blocked pending this decision; it must be resumed, implemented, and verified before completion can be claimed.
 
 The original launcher edits and exploratory screenshots were preserved. Verification data for the real app was stored outside the repository under the system temporary directory.
 
