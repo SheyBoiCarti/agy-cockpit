@@ -1,5 +1,6 @@
 from agy_cockpit.backend.services.process_utils import terminate_process_tree, spawn_owned_process
 from agy_cockpit.backend.services.tool_identity import ToolIdentityRegistry
+from agy_cockpit.backend.services.cli_permission_bridge import CLIPermissionBridge, verify_cli_hook_support
 """Agent Service managing Google Antigravity SDK lifecycle and streaming."""
 
 import abc
@@ -360,12 +361,29 @@ class CLISubscriptionAdapter(AntigravityAdapter):
         cli_subagents_stack: List[str] = []
 
         proc = None
+        permission_bridge = None
         try:
+            worker_cwd = workspace_path
+            worker_env = None
+            if policy_preset != 'always-proceed':
+                await verify_cli_hook_support(self.agy_path, model_slug, cancellation_token)
+                permission_bridge = CLIPermissionBridge(workspace_path, policy_preset,
+                    cancellation_token, approval_handler, on_tool_start, on_tool_finish)
+                await permission_bridge.__aenter__()
+                worker_cwd = str(permission_bridge.root)
+                worker_env = {**os.environ, **permission_bridge.environment}
+                # The child cwd exists solely to register the native hook. All user
+                # work must use the original workspace, including command cwd values.
+                scoped_prompt = (f'Workspace root: {workspace_path}. Use this directory for all project '
+                    'files and command working directories. The temporary .agy-cockpit-* directory '
+                    'only contains application permission hooks; do not edit it.\n\n' + full_prompt)
+                cmd = self._build_cmd(conversation_id, scoped_prompt, workspace_path, model_slug, policy_preset)
             proc = await spawn_owned_process(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=workspace_path,
+                cwd=worker_cwd,
+                env=worker_env,
                 **({"start_new_session": True} if os.name != "nt" else {}),
             )
 
@@ -435,6 +453,8 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                         delta_obj = data.get("delta") or step.get("delta") or {}
                         step_type = step.get("step_type")
                         state = step.get("state")
+                        if permission_bridge and (step_type == 'tool' or delta_obj.get('tool_calls')) and not permission_bridge.ready:
+                            raise RuntimeError('CLI permission hook did not initialize; execution stopped. Check CLI hook support.')
 
                         # Text delta streaming
                         text_chunk = step.get("text_delta") or delta_obj.get("text") or step.get("text")
@@ -449,6 +469,8 @@ class CLISubscriptionAdapter(AntigravityAdapter):
 
                         # Delta-based tool calls
                         for tc_data in delta_obj.get("tool_calls", []):
+                            if permission_bridge:
+                                continue  # Native hook supplies authoritative args before execution.
                             tc_id = tc_data.get("id") or f"tool-{len(active_tools)}"
                             tc_name = tc_data.get("name", "tool")
                             tc_args = tc_data.get("args", {})
@@ -473,38 +495,12 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                             tool_info = step.get("tool_info", {})
 
                             if state == "ACTIVE":
-                                active_tools[tool_id] = tool_name
                                 params = tool_info.get("parameters", {})
-                                should_ask = False
-                                if policy_preset in ("always-prompt", "strict"):
-                                    should_ask = True
-                                elif policy_preset in ("ask-destructive", "request-review") or policy_preset != "always-proceed":
-                                    should_ask = tool_name in (
-                                        "run_command", "write_to_file", "replace_file_content", "create_file", "edit_file"
-                                    )
-
-                                if should_ask:
-                                    tc = agy.types.ToolCall(id=tool_id, name=tool_name, args=params)
-                                    approved = await approval_handler(tc)
-                                    if not approved:
-                                        await on_tool_start(tool_id, tool_name, params)
-                                        await on_tool_finish(tool_id, tool_name, False, "User rejected execution")
-                                        active_tools.pop(tool_id, None)
-                                        cancellation_token.set()
-                                        if proc and proc.returncode is None:
-                                            try:
-                                                proc.terminate()
-                                                await asyncio.sleep(0.1)
-                                                if proc.returncode is None:
-                                                    proc.kill()
-                                            except Exception:
-                                                pass
-                                        return TurnResult(
-                                            final_text="Execution halted: Tool call rejected by user.",
-                                            reasoning_text="".join(accumulated_thoughts),
-                                            state=RunState.CANCELLED,
-                                        )
-                                await on_tool_start(tool_id, tool_name, params)
+                                active_tools[tool_id] = tool_name
+                                # ACTIVE is telemetry, not a permission request. The
+                                # synchronous hook owns approval and the complete args.
+                                if not permission_bridge:
+                                    await on_tool_start(tool_id, tool_name, params)
 
                             elif state in ("DONE", "ERROR"):
                                 success = (state == "DONE")
@@ -515,6 +511,8 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                                     await on_tool_log(tool_id, str(out), not success)
                                 await on_tool_finish(tool_id, tool_name, success, str(out)[:500])
                                 active_tools.pop(tool_id, None)
+                                if permission_bridge:
+                                    permission_bridge.started_tools.pop(tool_id, None)
 
                             # Subagent tracking
                             if tool_name in ("invoke_subagent", "define_subagent") and on_subagent_update:
@@ -537,6 +535,10 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                                 await on_subagent_update(sa_id, parent_sa_id, role, sa_state, f"Executing {tool_name}", depth)
 
                     elif event_name == "result":
+                        if cancellation_token.is_set():
+                            return TurnResult('Execution halted: Tool call rejected by user.'
+                                if permission_bridge and permission_bridge.rejected else ''.join(accumulated_tokens),
+                                ''.join(accumulated_thoughts), RunState.CANCELLED)
                         res = data.get("result", {})
                         if isinstance(res, dict):
                             final_text = res.get("response") or res.get("text") or "".join(accumulated_tokens)
@@ -571,7 +573,8 @@ class CLISubscriptionAdapter(AntigravityAdapter):
 
                 if cancellation_token.is_set():
                     return TurnResult(
-                        final_text="".join(accumulated_tokens),
+                        final_text='Execution halted: Tool call rejected by user.'
+                            if permission_bridge and permission_bridge.rejected else ''.join(accumulated_tokens),
                         reasoning_text="".join(accumulated_thoughts),
                         state=RunState.CANCELLED,
                     )
@@ -597,7 +600,10 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                     stderr_task.cancel()
                 await asyncio.gather(cancel_task, stderr_task, return_exceptions=True)
                 # Fail any tool that was left in ACTIVE state when the process stopped
-                for t_id, t_name in list(active_tools.items()):
+                unfinished = dict(active_tools)
+                if permission_bridge:
+                    unfinished.update({key: value['name'] for key, value in permission_bridge.started_tools.items()})
+                for t_id, t_name in unfinished.items():
                     await on_tool_finish(t_id, t_name, False, "Process ended before tool completed")
                 active_tools.clear()
 
@@ -612,6 +618,9 @@ class CLISubscriptionAdapter(AntigravityAdapter):
                 error_code="CLI_EXECUTION_ERROR",
                 error_message=str(e),
             )
+        finally:
+            if permission_bridge:
+                await permission_bridge.__aexit__(None, None, None)
 
 
 class UnifiedAntigravityAdapter(AntigravityAdapter):

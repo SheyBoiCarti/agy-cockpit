@@ -55,7 +55,7 @@ class WorkspaceService:
             try:
                 def _filter(change: watchfiles.Change, p: str) -> bool:
                     parts = pathlib.Path(p).parts
-                    return not any(part in IGNORED_DIRECTORIES for part in parts)
+                    return not any(part in IGNORED_DIRECTORIES or part.startswith('.agy-cockpit-') for part in parts)
 
                 async for changes in watchfiles.awatch(path, stop_event=stop_evt, watch_filter=_filter):
                     for change, file_p in changes:
